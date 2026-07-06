@@ -1,4 +1,4 @@
-# LGS Install Script v3.4 — P.R.I.S.M
+ # LGS Install Script v3.4 — P.R.I.S.M
 
 > **PowerShell Remote Initialization & System Management**
 
