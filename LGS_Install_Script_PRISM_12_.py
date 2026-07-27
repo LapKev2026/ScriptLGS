@@ -7,7 +7,7 @@ Conversion Python 3 / PyQt6
 © Copyright Groupe LGS — une Société IBM
 """
 
-PRISM_VERSION = "3.8"   # ← incrémenter ici uniquement lors des releases
+PRISM_VERSION = "3.8.1"   # ← incrémenter ici uniquement lors des releases
 
 
 # DOIT être avant tout autre import : les union types (X | Y), list[str],
@@ -75,14 +75,14 @@ except ImportError:
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QProgressBar, QTextEdit, QFrame, QScrollArea,
+    QLabel, QProgressBar, QTextEdit, QFrame,
     QPushButton, QLineEdit, QCheckBox, QFormLayout, QMessageBox
 )
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QTimer, QSize
+    Qt, QThread, pyqtSignal
 )
 from PyQt6.QtGui import (
-    QColor, QFont, QPalette, QIcon, QPixmap
+    QFont, QIcon, QPixmap
 )
 
 
@@ -66575,6 +66575,32 @@ NVIDIA_PRO_LAPTOP_DEVICES = {
     "DEV_2838",  # RTX 3000 Ada Generation Laptop GPU
 }
 
+# Noms lisibles par Device ID — filet de sécurité pour l'AFFICHAGE quand le champ
+# Name de CIM est vide (fréquent sur les GPU Ada laptop) et que nvidia-smi n'est
+# pas disponible. N'influence PAS la logique (branche via table/VEN_10DE).
+NVIDIA_DEV_NAMES = {
+    "DEV_28B8": "NVIDIA RTX 2000 Ada Generation Laptop GPU",
+    "DEV_2730": "NVIDIA RTX 5000 Ada Generation Laptop GPU",
+    "DEV_27BB": "NVIDIA RTX 3500 Ada Generation Laptop GPU",
+    "DEV_2838": "NVIDIA RTX 3000 Ada Generation Laptop GPU",
+    "DEV_26B9": "NVIDIA RTX 2000 Ada",
+    "DEV_26B5": "NVIDIA RTX 4000 Ada",
+    "DEV_27B2": "NVIDIA RTX 4500 Ada",
+    "DEV_27B8": "NVIDIA RTX 4000 SFF Ada",
+    "DEV_26B1": "NVIDIA RTX A2000",
+    "DEV_2233": "NVIDIA RTX A4000",
+    "DEV_2235": "NVIDIA RTX A5000",
+    "DEV_2231": "NVIDIA RTX A6000",
+}
+
+# Noms génériques renvoyés par CIM quand aucun nom commercial n'est enregistré
+# pour la carte (cas observé : « Display » sur RTX 2000 Ada laptop). Dans ce cas
+# on affiche le nom issu de NVIDIA_DEV_NAMES à la place.
+NVIDIA_GENERIC_NAMES = (
+    "DISPLAY", "3D VIDEO CONTROLLER", "VIDEO CONTROLLER",
+    "MICROSOFT BASIC DISPLAY ADAPTER", "STANDARD VGA GRAPHICS ADAPTER",
+)
+
 # Pilote unifié NVIDIA RTX Enterprise / Quadro (branche Production, certifié ISV).
 # Un seul paquet couvre TOUTE la gamme Pro/Workstation (desktop + laptop,
 # Ada / Ampere / Blackwell). psid/pfid confirmés côté API NVIDIA.
@@ -66716,7 +66742,8 @@ def get_windows_build() -> tuple[str, str]:
 
 
 def run_cmd(cmd: list[str], capture: bool = True,
-            timeout: int = 1800) -> tuple[int, str]:
+            timeout: int = 1800,
+            env_extra: dict | None = None) -> tuple[int, str]:
     """Exécute une commande subprocess et retourne (code, output).
 
     Forçage UTF-8 complet :
@@ -66725,11 +66752,16 @@ def run_cmd(cmd: list[str], capture: bool = True,
     - chcp 65001 via env COMSPEC    → page de code console Windows
     - $OutputEncoding + [Console]   → encodage sortie PowerShell
     Sans ça, Windows FR utilise CP850/CP1252 et les accents/émojis sont corrompus.
+
+    env_extra : variables d'environnement supplémentaires (ex. valeurs passées à un
+    script PowerShell sans interpolation dans le corps du script — cf. renommage).
     """
     try:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"]       = "1"
+        if env_extra:
+            env.update({str(k): str(v) for k, v in env_extra.items()})
 
         # Si c'est un appel PowerShell, injecter le forçage UTF-8 en tête de commande.
         # On détecte via cmd[0] (powershell / pwsh).
@@ -66887,6 +66919,42 @@ def is_service_installed(service_name: str) -> bool:
         return False
 
 
+def verify_authenticode(path: Path) -> tuple[bool, str]:
+    """SEC-2 — Vérifie la signature Authenticode d'un exécutable Windows.
+
+    Retourne (valide: bool, message: str).
+    - Valid / UnknownError avec SignerCertificate présent → accepté.
+    - NotSigned / HashMismatch / NotTrusted → rejeté.
+    Utilise Get-AuthenticodeSignature (disponible sur toutes versions Windows).
+    """
+    ps = (
+        f"$s = Get-AuthenticodeSignature -FilePath '{str(path)}';"
+        "$s.Status.ToString() + '|' + "
+        "$(if ($s.SignerCertificate) { $s.SignerCertificate.Subject } else { '' })"
+    )
+    try:
+        code, out = run_cmd(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+             "-Command", ps],
+            timeout=30
+        )
+        if code != 0:
+            return False, f"Get-AuthenticodeSignature a échoué (code {code})"
+        parts = out.strip().split("|", 1)
+        status = parts[0].strip() if parts else "Unknown"
+        subject = parts[1].strip() if len(parts) > 1 else ""
+        # Statuts acceptables : le fichier est signé et la chaîne est valide.
+        # UnknownError peut apparaître pour des certificats valides sur certains
+        # proxy qui reconstruisent la chaîne TLS — on l'accepte si un sujet existe.
+        if status == "Valid":
+            return True, f"Signature valide — {subject}"
+        if status == "UnknownError" and subject:
+            return True, f"Signature présente (UnknownError) — {subject}"
+        return False, f"Signature non valide : {status} — {subject or 'aucun certificat'}"
+    except Exception as exc:
+        return False, f"Vérification signature — erreur : {exc}"
+
+
 class InstallWorker(QThread):
     """Thread d'arrière-plan qui exécute toutes les étapes d'installation."""
 
@@ -66908,11 +66976,29 @@ class InstallWorker(QThread):
         # Test winget effectué dans run() avant les étapes
         self._winget_ok: bool = False
 
-        # Log incrémental : écrit sur disque au fil de l'eau — si le script
-        # plante ou est tué, le log n'est pas perdu.
+        # SEC-4 — Le log est placé dans %PROGRAMDATA%\LGS\Logs (accessible aux
+        # administrateurs uniquement) plutôt que sur le bureau public. Un raccourci
+        # sur le bureau est créé pour faciliter l'accès à l'opérateur.
+        # En cas d'échec (partition pleine, droits…), fallback silencieux vers le
+        # bureau (comportement identique à l'ancien code).
         ts = self.start_time.strftime("%Y-%m-%d_%H-%M-%S")
         cn = self.machine_info.get("computer_name") or platform.node()
-        self.log_path = get_desktop() / f"LGS_Log_Detaile_{cn}_{ts}.txt"
+        log_filename = f"LGS_Log_Detaile_{cn}_{ts}.txt"
+        programdata = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
+        log_dir = programdata / "LGS" / "Logs"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            # Restreindre les ACL : Administrateurs + SYSTEM uniquement (icacls).
+            run_cmd([
+                "icacls", str(log_dir),
+                "/inheritance:r",
+                "/grant:r", "BUILTIN\\Administrators:(OI)(CI)F",
+                "/grant:r", "NT AUTHORITY\\SYSTEM:(OI)(CI)F",
+            ], timeout=15)
+            self.log_path = log_dir / log_filename
+        except Exception:
+            # Fallback : bureau de l'utilisateur courant
+            self.log_path = get_desktop() / log_filename
         build, version = get_windows_build()
         header = (
             "╔══════════════════════════════════════════════════════════════╗\n"
@@ -66935,7 +67021,7 @@ class InstallWorker(QThread):
             self._log_fh.write(header)
             self._log_fh.flush()
         except Exception:
-            self.log_path = None  # bureau inaccessible — on continue sans fichier
+            self.log_path = None  # emplacement inaccessible — on continue sans fichier
             if self._log_fh:
                 try:
                     self._log_fh.close()
@@ -67206,9 +67292,16 @@ class InstallWorker(QThread):
             # ou InitiateSystemShutdown sur certaines versions Windows, tuant la GUI.
             # Solution : écrire directement dans le registre + WMI SetComputerName,
             # sans aucun signal de redémarrage. Le changement est effectif après reboot.
+            #
+            # SEC-1 : le nom est passé via une VARIABLE D'ENVIRONNEMENT ($env:PRISM_NEW_NAME),
+            # jamais interpolé dans le corps du script → aucun risque d'injection PowerShell.
+            # (L'ancienne approche `-Command <script> -ArgumentList <nom>` était inopérante :
+            #  powershell.exe n'a pas de paramètre -ArgumentList, et le préfixe UTF-8 injecté
+            #  cassait le param() — le nom n'était jamais lié, donc le renommage échouait.)
             ps_rename = r"""
-$name = '""" + new_name + r"""'
 try {
+    $name = $env:PRISM_NEW_NAME
+
     # 1) Registre — clés lues par Windows au prochain démarrage
     $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName'
     Set-ItemProperty -Path $path -Name ComputerName -Value $name -ErrorAction Stop
@@ -67227,8 +67320,9 @@ try {
 }
 """
             code, out = run_cmd(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_rename],
-                timeout=30
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+                 "-Command", ps_rename],
+                timeout=30, env_extra={"PRISM_NEW_NAME": new_name}
             )
             out_clean = out.strip()
             if "OK" in out_clean and "FAIL" not in out_clean:
@@ -67478,6 +67572,13 @@ try {
                     "installation annulée. URL inaccessible ?", "WARN"
                 )
                 return False
+            # SEC-2 — vérification Authenticode avant exécution
+            sig_ok, sig_msg = verify_authenticode(tmp)
+            if sig_ok:
+                self.log(f"{name} — {sig_msg}", "OK")
+            else:
+                self.log(f"{name} — signature invalide : {sig_msg} — installation annulée.", "FAIL")
+                return False
             run_cmd([str(tmp)] + args)
             # Vérification post-installation
             if detect_paths and any(Path(p).exists() for p in detect_paths):
@@ -67650,20 +67751,30 @@ try {
                     self.log(f"Intel DSA — fichier trop petit ({file_size} o), annulé.", "WARN")
                     self.log(f"Installez manuellement : {dsa['dl_url_fallback']}", "WARN")
                 else:
-                    self.log("Installation Intel DSA (1-2 min)...", "CMD")
-                    run_cmd([str(tmp)] + dsa["dl_args"], timeout=300)
-                    # Le service démarre en arrière-plan : courte attente puis vérif.
-                    for _ in range(6):
-                        time.sleep(5)
-                        if _dsa_detected():
-                            break
-                    if _dsa_detected():
-                        self.log("Intel DSA installé avec succès.", "OK")
+                    # SEC-2 — vérification Authenticode avant exécution
+                    sig_ok, sig_msg = verify_authenticode(tmp)
+                    if not sig_ok:
+                        # Signature invalide : on IGNORE uniquement Intel DSA, sans
+                        # interrompre le reste de l'étape 6 (NVIDIA, NVIDIA App,
+                        # Lenovo Vantage sont appelés APRÈS). L'ancien `return`
+                        # tuait toute l'étape et sautait la détection NVIDIA.
+                        self.log(f"Intel DSA — signature invalide : {sig_msg} — installation ignorée.", "FAIL")
                     else:
-                        self.log(
-                            "Intel DSA — installation lancée ; "
-                            "peut se terminer en arrière-plan.", "WARN"
-                        )
+                        self.log(f"Intel DSA — {sig_msg}", "OK")
+                        self.log("Installation Intel DSA (1-2 min)...", "CMD")
+                        run_cmd([str(tmp)] + dsa["dl_args"], timeout=300)
+                        # Le service démarre en arrière-plan : courte attente puis vérif.
+                        for _ in range(6):
+                            time.sleep(5)
+                            if _dsa_detected():
+                                break
+                        if _dsa_detected():
+                            self.log("Intel DSA installé avec succès.", "OK")
+                        else:
+                            self.log(
+                                "Intel DSA — installation lancée ; "
+                                "peut se terminer en arrière-plan.", "WARN"
+                            )
             except Exception as exc:
                 self.log(f"Intel DSA — erreur : {exc}", "FAIL")
                 self.log(f"Installez manuellement : {dsa['dl_url_fallback']}", "WARN")
@@ -67683,31 +67794,109 @@ try {
         self.step(6, "done", "Logiciels installés")
         self.progress(7, "Étape 7/11 — Favoris navigateurs")
 
+    @staticmethod
+    def _ps_encoded(script: str) -> list[str]:
+        """Encode un script PS en base64 UTF-16LE et retourne les args powershell.
+        Contourne le problème d'interprétation des $ et caractères spéciaux
+        quand le script est passé via subprocess en argument -Command.
+
+        On préfixe $ProgressPreference='SilentlyContinue' : sinon, au PREMIER appel
+        d'une cmdlet CIM, PowerShell émet un flux de progression (« Préparation des
+        modules à la première utilisation ») qui est capturé avec la sortie et
+        pollue les valeurs lues (ex. le nom du GPU revenait en charabia).
+        """
+        script = "$ProgressPreference='SilentlyContinue'\n" + script
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        return ["powershell", "-NoProfile", "-EncodedCommand", encoded]
+
     def _nvidia_device_id(self):
-        """Retourne le Device ID (DEV_XXXX) du GPU NVIDIA, ou None si absent."""
+        """Retourne le Device ID (DEV_XXXX) du GPU NVIDIA, ou None si absent.
+
+        CLÉ DE DÉTECTION = VEN_10DE (ID fabricant PCI de NVIDIA), présent dans le
+        hardware ID QUEL QUE SOIT l'état du pilote. Indispensable en provisioning :
+        sur une image fraîche, le GPU discret apparaît comme « 3D Video Controller »
+        (Name SANS « NVIDIA ») tant que le pilote n'est pas installé — un filtre sur
+        le nom échoue donc systématiquement à cette étape.
+
+        On écarte les périphériques compagnons NVIDIA (audio HDMI, USB-C, HID,
+        composant logiciel) qui portent aussi VEN_10DE, via l'exclusion des classes
+        MEDIA/AudioEndpoint/USB/HIDClass/SoftwareComponent et la priorité à la classe
+        Display / aux noms 3D/Display/VGA. Script encodé base64 (-EncodedCommand).
+        """
         ps = (
-            "$g = Get-CimInstance Win32_PnPEntity | "
-            "Where-Object { $_.PNPClass -eq 'Display' -and $_.Name -like '*NVIDIA*' } | "
-            "Select-Object -First 1; if ($g) { $g.DeviceID }"
+            "$gpu = $null\n"
+            "$gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |"
+            " Where-Object { $_.PNPDeviceID -like '*VEN_10DE*' } |"
+            " Select-Object -First 1 -ExpandProperty PNPDeviceID\n"
+            "if (-not $gpu) {\n"
+            "    $gpu = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |"
+            " Where-Object {\n"
+            "        $_.DeviceID -like '*VEN_10DE*' -and $_.DeviceID -like '*DEV_*' -and\n"
+            "        $_.PNPClass -ne 'MEDIA' -and $_.PNPClass -ne 'AudioEndpoint' -and\n"
+            "        $_.PNPClass -ne 'USB' -and $_.PNPClass -ne 'HIDClass' -and\n"
+            "        $_.PNPClass -ne 'SoftwareComponent'\n"
+            "    } |\n"
+            "    Sort-Object -Property @{ Expression = {\n"
+            "        if ($_.PNPClass -eq 'Display') { 0 }\n"
+            "        elseif ($_.Name -like '*3D*' -or $_.Name -like '*Display*' -or\n"
+            "                $_.Name -like '*VGA*' -or $_.Name -like '*NVIDIA*') { 1 }\n"
+            "        else { 2 } } } |\n"
+            "    Select-Object -First 1 -ExpandProperty DeviceID\n"
+            "}\n"
+            "if ($gpu) { $gpu }\n"
         )
-        code, out = run_cmd(["powershell", "-NoProfile", "-Command", ps], timeout=30)
-        if code != 0:
-            return None
+        code, out = run_cmd(self._ps_encoded(ps), timeout=30)
+        # On ne bloque pas sur code != 0 : si l'ID est dans la sortie, on le prend.
         m = re.search(r"(DEV_[0-9A-F]{4})", (out or "").upper())
         return m.group(1) if m else None
 
     def _nvidia_gpu_name(self):
-        """Retourne le nom du GPU NVIDIA (ex. 'NVIDIA RTX 2000 Ada Generation
-        Laptop GPU'), ou None si absent."""
-        ps = (
-            "$g = Get-CimInstance Win32_PnPEntity | "
-            "Where-Object { $_.PNPClass -eq 'Display' -and $_.Name -like '*NVIDIA*' } | "
-            "Select-Object -First 1; if ($g) { $g.Name }"
+        """Retourne le nom du GPU NVIDIA, ou None si absent.
+
+        Source 1 : nvidia-smi (nom exact si un pilote est installé).
+        Source 2 : CIM sur VEN_10DE. ATTENTION — sur les GPU Ada laptop, le champ
+        Name de CIM est souvent VIDE ; dans ce cas on renvoie None et l'appelant
+        retombe sur NVIDIA_DEV_NAMES. Script encodé base64 (-EncodedCommand).
+        """
+        # Source 1 — nvidia-smi (le plus fiable quand un pilote est présent).
+        smi = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "nvidia-smi.exe"
+        code_smi, out_smi = run_cmd(
+            [str(smi) if smi.exists() else "nvidia-smi",
+             "--query-gpu=name", "--format=csv,noheader"],
+            timeout=30
         )
-        code, out = run_cmd(["powershell", "-NoProfile", "-Command", ps], timeout=30)
-        if code != 0:
-            return None
-        return (out or "").strip() or None
+        if code_smi == 0:
+            first = (out_smi or "").strip().splitlines()[0].strip() if (out_smi or "").strip() else ""
+            if first and "NVIDIA" in first.upper():
+                return first
+
+        # Source 2 — CIM (peut renvoyer un Name vide sur Ada laptop → None).
+        ps = (
+            "$name = $null\n"
+            "$name = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |"
+            " Where-Object { $_.PNPDeviceID -like '*VEN_10DE*' } |"
+            " Select-Object -First 1 -ExpandProperty Name\n"
+            "if (-not $name) {\n"
+            "    $name = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |"
+            " Where-Object {\n"
+            "        $_.DeviceID -like '*VEN_10DE*' -and $_.DeviceID -like '*DEV_*' -and\n"
+            "        $_.PNPClass -ne 'MEDIA' -and $_.PNPClass -ne 'AudioEndpoint' -and\n"
+            "        $_.PNPClass -ne 'USB' -and $_.PNPClass -ne 'HIDClass' -and\n"
+            "        $_.PNPClass -ne 'SoftwareComponent'\n"
+            "    } |\n"
+            "    Sort-Object -Property @{ Expression = {\n"
+            "        if ($_.PNPClass -eq 'Display') { 0 }\n"
+            "        elseif ($_.Name -like '*NVIDIA*') { 1 } else { 2 } } } |\n"
+            "    Select-Object -First 1 -ExpandProperty Name\n"
+            "}\n"
+            # Émettre derrière une sentinelle ; n'accepter que si ça ressemble à un
+            # vrai nom NVIDIA (pas 'Display', pas vide) — sinon l'appelant utilise
+            # la table NVIDIA_DEV_NAMES.
+            "if ($name -and $name -like '*NVIDIA*') { Write-Output ('NVGPUNAME=' + $name) }\n"
+        )
+        code, out = run_cmd(self._ps_encoded(ps), timeout=30)
+        m = re.search(r"NVGPUNAME=(.+)", out or "")
+        return m.group(1).strip() if m else None
 
     def _install_nvidia_driver(self):
         """Détecte un GPU NVIDIA et installe le dernier pilote via l'API NVIDIA.
@@ -67725,6 +67914,25 @@ try {
         # 1. Détecter un GPU NVIDIA et récupérer son Device ID via CIM.
         device_id = self._nvidia_device_id()
         if not device_id:
+            # Diagnostic : lister TOUT périphérique PCI VEN_10DE présent, pour
+            # distinguer « aucune carte NVIDIA » d'un problème de filtre.
+            diag_ps = (
+                "Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |"
+                " Where-Object { $_.DeviceID -like '*VEN_10DE*' } |"
+                " ForEach-Object { \"  [$($_.PNPClass)] $($_.Name) :: $($_.DeviceID)\" }"
+            )
+            _, diag = run_cmd(self._ps_encoded(diag_ps), timeout=30)
+            diag = (diag or "").strip()
+            if diag:
+                self.log(
+                    "GPU NVIDIA non retenu par le filtre. Périphériques VEN_10DE "
+                    "présents :\n" + diag, "WARN"
+                )
+            else:
+                self.log(
+                    "Aucun périphérique PCI NVIDIA (VEN_10DE) sur cette machine — "
+                    "graphiques intégrés uniquement.", "INFO"
+                )
             self.log("Aucun GPU NVIDIA détecté — étape ignorée.", "SKIP")
             return
 
@@ -67733,6 +67941,10 @@ try {
         #       série T) → pilote unifié RTX Enterprise (certifié ISV).
         #     - GeForce grand public → pilote GeForce (table ou fallback générique).
         name = self._nvidia_gpu_name() or ""
+        # Un nom générique (« Display »…) n'identifie pas la carte : on lui
+        # substitue le nom commercial issu du Device ID.
+        if not name or name.strip().upper() in NVIDIA_GENERIC_NAMES:
+            name = NVIDIA_DEV_NAMES.get(device_id, name)
         name_u = name.upper()
         is_workstation = (
             device_id in NVIDIA_PRO_LAPTOP_DEVICES
@@ -67765,20 +67977,43 @@ try {
                 "mapping GeForce RTX générique.", "WARN"
             )
 
-        # 3. Version du pilote actuellement installé (ex. 566.36).
-        code_v, out_v = run_cmd(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_PnPSignedDriver | "
-             "Where-Object { $_.DeviceName -like '*nvidia*' -and "
-             "$_.DeviceClass -eq 'DISPLAY' } | "
-             "Select-Object -First 1 -ExpandProperty DriverVersion"],
+        # 3. Version du pilote NVIDIA actuellement installé (format NVIDIA, ex. 576.02).
+        installed = None
+        # 3a. Source la plus fiable : nvidia-smi (présent dès qu'un pilote est
+        #     installé) — donne DIRECTEMENT la version NVIDIA, sans conversion.
+        smi = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "nvidia-smi.exe"
+        code_smi, out_smi = run_cmd(
+            [str(smi) if smi.exists() else "nvidia-smi",
+             "--query-gpu=driver_version", "--format=csv,noheader"],
             timeout=30
         )
-        installed = None
-        mv = re.search(r"\d+\.\d+\.\d+\.(\d{4,5})", (out_v or "").strip())
-        if mv:
-            d = mv.group(1)
-            installed = d[:-2] + "." + d[-2:]
+        msmi = re.search(r"(\d{3})\.(\d{2})", out_smi or "")
+        if code_smi == 0 and msmi:
+            installed = f"{msmi.group(1)}.{msmi.group(2)}"
+        # 3b. Fallback CIM : DriverVersion Windows du GPU, filtré sur VEN_10DE
+        #     et NON sur le nom — sur beaucoup de portables le DeviceName vaut
+        #     littéralement « Display », donc l'ancien filtre `DeviceName -like
+        #     '*nvidia*'` ne matchait jamais → « inconnu ».
+        #     Conversion : les 5 DERNIERS chiffres de la queue → XXX.XX
+        #     (ex. Windows 32.0.15.7602 → NVIDIA 576.02).
+        if installed is None:
+            _, out_v = run_cmd(self._ps_encoded(
+                "$v = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |"
+                " Where-Object { $_.DeviceID -like '*VEN_10DE*' -and $_.DriverVersion } |"
+                " Select-Object -First 1 -ExpandProperty DriverVersion\n"
+                "if (-not $v) {\n"
+                "    $v = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |"
+                " Where-Object { $_.PNPDeviceID -like '*VEN_10DE*' } |"
+                " Select-Object -First 1 -ExpandProperty DriverVersion\n"
+                "}\n"
+                "if ($v) { Write-Output ('NVDRV=' + $v) }\n"
+            ), timeout=30)
+            mver = re.search(r"NVDRV=([\d.]+)", out_v or "")
+            if mver:
+                digits = re.sub(r"\D", "", mver.group(1))
+                if len(digits) >= 5:
+                    last5 = digits[-5:]
+                    installed = last5[:3] + "." + last5[3:]
         self.log(f"Pilote installé : {installed or 'inconnu'}", "INFO")
 
         # 4. Lookup NVIDIA : dernière version + URL de téléchargement.
@@ -67806,10 +68041,12 @@ try {
             return
         self.log(f"Dernier pilote {branch} disponible : {latest}", "INFO")
 
-        # 5. Skip si déjà à jour.
+        # 5. Skip téléchargement si pilote déjà à jour — on continue quand même
+        #    pour que _install_nvidia_app() soit toujours exécutée ensuite.
         if installed and latest and installed == latest:
-            self.log("Pilote NVIDIA déjà à jour.", "SKIP")
-            return
+            self.log("Pilote NVIDIA déjà à jour — téléchargement ignoré.", "SKIP")
+            return  # retour dans _install_nvidia_driver() seulement ;
+                    # _install_nvidia_app() est appelé juste après dans step6_software.
 
         # 6. Télécharger (streaming — le paquet fait ~600 Mo à 1 Go) et installer.
         tmp = Path(tempfile.gettempdir()) / "NVIDIA-Driver.exe"
@@ -67822,6 +68059,13 @@ try {
             size_mb = tmp.stat().st_size / (1024 * 1024)
             if size_mb < 50:
                 self.log(f"NVIDIA — fichier trop petit ({size_mb:.0f} Mo), annulé.", "WARN")
+                return
+            # SEC-2 — vérification Authenticode avant exécution
+            sig_ok, sig_msg = verify_authenticode(tmp)
+            if sig_ok:
+                self.log(f"NVIDIA Driver — {sig_msg}", "OK")
+            else:
+                self.log(f"NVIDIA Driver — signature invalide : {sig_msg} — installation annulée.", "FAIL")
                 return
             self.log(
                 f"Installation silencieuse du pilote ({size_mb:.0f} Mo) — "
@@ -67904,6 +68148,13 @@ try {
             size_mb = tmp.stat().st_size / (1024 * 1024)
             if size_mb < 20:
                 self.log(f"NVIDIA App — fichier trop petit ({size_mb:.0f} Mo), annulé.", "WARN")
+                return
+            # SEC-2 — vérification Authenticode avant exécution
+            sig_ok, sig_msg = verify_authenticode(tmp)
+            if sig_ok:
+                self.log(f"NVIDIA App — {sig_msg}", "OK")
+            else:
+                self.log(f"NVIDIA App — signature invalide : {sig_msg} — installation annulée.", "FAIL")
                 return
             self.log(f"Installation silencieuse de NVIDIA App ({size_mb:.0f} Mo)...", "CMD")
             code_i, _ = run_cmd(
@@ -68017,8 +68268,20 @@ try {
             )
             tmp = Path(tempfile.gettempdir()) / f"AdobeReader_{ver_flat}.exe"
             self.log(f"Téléchargement Adobe Reader {ver}...", "CMD")
-            urllib.request.urlretrieve(dl_url, tmp)
+            # SEC-QUAL-6 : urlretrieve dépréciée remplacée par urlopen + copyfileobj
+            req_adobe = urllib.request.Request(dl_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req_adobe, timeout=300) as resp_adobe, \
+                 open(tmp, "wb") as f_adobe:
+                shutil.copyfileobj(resp_adobe, f_adobe)
             if tmp.stat().st_size > 100 * 1024 * 1024:
+                # SEC-2 — vérification Authenticode avant exécution
+                sig_ok, sig_msg = verify_authenticode(tmp)
+                if sig_ok:
+                    self.log(f"Adobe Reader — {sig_msg}", "OK")
+                else:
+                    self.log(f"Adobe Reader — signature invalide : {sig_msg} — installation annulée.", "FAIL")
+                    tmp.unlink(missing_ok=True)
+                    return
                 run_cmd([str(tmp), "/sAll", "/rs", "/msi",
                          "EULA_ACCEPT=YES", "SUPPRESS_APP_LAUNCH=YES"])
                 self.log(f"Adobe Reader {ver} installé.", "OK")
@@ -68357,8 +68620,10 @@ try {
         _hb = threading.Thread(target=_heartbeat, daemon=True)
         _hb.start()
 
+        # SEC-3 : RemoteSigned — les scripts PS système (PSGallery, WUA) sont
+        # signés par Microsoft et s'exécutent sans Bypass.
         code, out = run_cmd([
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
             "-Command", "$OutputEncoding=[System.Text.Encoding]::UTF8; " + ps_script
         ], timeout=7200)
 
@@ -68420,7 +68685,7 @@ try {
             _hb2.start()
 
             code2, out2 = run_cmd([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
                 "-Command", wua_script
             ], timeout=7200)
 
@@ -68525,8 +68790,9 @@ try {
         # NOTE sécurité : le mot de passe de récupération n'est JAMAIS loggé,
         # seulement le KeyProtectorId (le log atterrit sur le bureau).
 
+        # SEC-3 : RemoteSigned — les cmdlets BitLocker sont signées par Microsoft.
         code, out = run_cmd([
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
             "-Command", self.PS_BITLOCKER_ENTRA
         ])
 
@@ -68560,7 +68826,10 @@ try {
     # ─────────────────────────────────────────────────────────────────────────
 
     def save_log(self):
-        """Ajoute le pied de page (fin/durée) au log écrit au fil de l'eau."""
+        """Ajoute le pied de page (fin/durée) au log écrit au fil de l'eau,
+        puis crée un raccourci sur le bureau pointant vers le fichier log.
+        Le raccourci permet un accès rapide même si le log est dans %PROGRAMDATA%.
+        """
         duration = round((datetime.now() - self.start_time).total_seconds() / 60, 1)
         footer = (
             "\n══════════════════════════════════════════════════════════════════\n"
@@ -68578,6 +68847,29 @@ try {
             self.log(f"Impossible de finaliser le log : {exc}", "WARN")
         finally:
             self._close_log_file()
+
+        # Créer un raccourci bureau → log (même si le log est dans %PROGRAMDATA%).
+        # L'icône %SystemRoot%\System32\shell32.dll,70 ressemble à un bloc-notes.
+        if self.log_path and Path(self.log_path).exists():
+            try:
+                lnk = get_desktop() / f"{Path(self.log_path).name}.lnk"
+                ps_lnk = (
+                    f"$s = (New-Object -COM WScript.Shell).CreateShortcut('{lnk}');"
+                    f"$s.TargetPath = '{self.log_path}';"
+                    "$s.IconLocation = '%SystemRoot%\\System32\\shell32.dll,70';"
+                    "$s.Description = 'Journal d installation PRISM — LGS';"
+                    "$s.Save()"
+                )
+                code_lnk, _ = run_cmd(
+                    ["powershell", "-NoProfile", "-Command", ps_lnk],
+                    timeout=15
+                )
+                if code_lnk == 0:
+                    self.log(f"Raccourci log créé sur le bureau : {lnk.name}", "OK")
+                else:
+                    self.log("Raccourci log — création échouée (non bloquant).", "WARN")
+            except Exception as exc_lnk:
+                self.log(f"Raccourci log — erreur : {exc_lnk}", "WARN")
 
     # ─────────────────────────────────────────────────────────────────────────
     # POINT D'ENTRÉE DU THREAD
@@ -69222,7 +69514,8 @@ class PRISMWindow(QMainWindow):
                 os.startfile(log_path)
             else:
                 QMessageBox.warning(self, "Log introuvable",
-                                    "Le fichier log n'a pas pu être trouvé sur le bureau.")
+                                    "Le fichier log est introuvable.\n"
+                                    "Emplacement attendu : %PROGRAMDATA%\\LGS\\Logs\\")
         except Exception as exc:
             QMessageBox.warning(self, "Erreur", f"Impossible d'ouvrir le log :\n{exc}")
 
@@ -69248,7 +69541,7 @@ class PRISMWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    import traceback, tempfile
+    import traceback
 
     _crash_log = Path(tempfile.gettempdir()) / "PRISM_crash.log"
 
@@ -69309,7 +69602,7 @@ def main():
 
 
 if __name__ == "__main__":
-    import traceback, tempfile
+    import traceback
     _crash_log = Path(tempfile.gettempdir()) / "PRISM_crash.log"
     try:
         main()
