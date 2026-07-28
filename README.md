@@ -121,7 +121,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 
 **Outil compagnon**
 
-- **PRISM Asset Updater** (PS1 + EXE via ps2exe) — interface glisser-déposer permettant à du personnel non technique de remplacer les fichiers Base64 embarqués sans connaissances en développement.
+- **PRISM Asset Updater** (`PRISM_Updater.py`, Python / PyQt6) — interface glisser-déposer permettant à du personnel non technique de remplacer les fichiers Base64 embarqués sans connaissances en développement. L'outil cible **le script Python** (`LGS_Install_Script_PRISM_12_.py`) : il localise le bloc `FICHIERS_EMBARQUES`, ré-encode les fichiers déposés en Base64 (lignes de 64 caractères) et réécrit le bloc en UTF-8 avec BOM, après création automatique d'une sauvegarde horodatée du script d'origine.
 
 ---
 
