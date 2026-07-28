@@ -67410,7 +67410,7 @@ try {
 
     def step5_office(self):
         self.step(5, "active", "Installation de Microsoft 365 Apps...")
-        self.log("MICROSOFT 365 APPS (ODT)", "SECTION")
+        self.log("MICROSOFT 365 APPS", "SECTION")
 
         office_paths = LOGICIELS["office"]["paths"]
         already = any(Path(p).exists() for p in office_paths)
@@ -67420,18 +67420,87 @@ try {
             self.progress(6, "Étape 6/11 — Logiciels")
             return
 
+        # 1) winget d'abord : aucun fichier à pré-déposer, setup.exe téléchargé
+        #    depuis le CDN Microsoft. Notre configuration.xml est passée via
+        #    --custom /configure, donc le résultat est identique à l'ODT.
+        ok = self._install_office_winget()
+        if ok:
+            self.log("Microsoft 365 Apps installé via winget.", "OK")
+            self.step(5, "done", "Office installé")
+            self.progress(6, "Étape 6/11 — Logiciels")
+            return
+
+        # 2) Repli ODT local — utile si winget est absent, si le poste n'a pas
+        #    accès au CDN, ou en cas de « hash mismatch » du manifeste winget.
+        self.log("Office — repli sur l'ODT local.", "INFO")
         ok = self._install_office_odt()
         if ok:
             self.log("Microsoft 365 Apps installé via ODT.", "OK")
             self.step(5, "done", "Office installé")
         else:
             self.log(
-                "Échec ODT — voir le journal ci-dessus. "
+                "Échec winget ET ODT — voir le journal ci-dessus. "
                 "Config manuelle : https://config.office.com", "FAIL"
             )
             self.step(5, "done", "Office : échec (manuel requis)")
 
         self.progress(6, "Étape 6/11 — Logiciels")
+
+    def _install_office_winget(self) -> bool:
+        """Installe Microsoft 365 Apps via winget, en lui passant NOTRE configuration.xml.
+
+        Le paquet winget `Microsoft.Office` est en réalité le MÊME setup.exe Click-to-Run
+        que l'ODT : winget se contente de le télécharger depuis le CDN Microsoft. On évite
+        donc d'avoir à pré-déposer setup.exe dans C:\\LGS_Deploy\\ODT, tout en gardant le
+        contrôle total (fr-ca, canal, RemoveMSI…) grâce à --custom "/configure <xml>".
+
+        Sans --custom, winget installerait la configuration par défaut du manifeste
+        (langue/apps non maîtrisées) — inacceptable pour un poste corpo.
+        """
+        if not self._winget_ok:
+            self.log("Office — winget indisponible.", "WARN")
+            return False
+
+        work = Path(tempfile.gettempdir()) / "LGS_Office"
+        work.mkdir(parents=True, exist_ok=True)
+        cfg = work / "configuration.xml"
+        try:
+            cfg.write_text(self.ODT_CONFIG_XML, encoding="utf-8")
+        except Exception as e:
+            self.log(f"Office — écriture configuration.xml impossible : {e}", "WARN")
+            return False
+
+        self.log("Office — winget install Microsoft.Office (config fr-CA)", "CMD")
+        # Pas de --silent ici : le mode silencieux vient de <Display Level="None"/>
+        # dans le XML. Ajouter --silent ferait entrer les switches du manifeste en
+        # conflit avec /configure.
+        code, out = run_cmd([
+            "winget", "install", "--id", "Microsoft.Office",
+            "--exact",
+            "--source", "winget",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--custom", f'/configure "{cfg}"',
+        ], timeout=3600)
+
+        SUCCESS_CODES = (0, 3010, 1641)
+        if code not in SUCCESS_CODES:
+            for line in (out or "").strip().splitlines()[:6]:
+                if line.strip():
+                    self.log(f"  winget: {line.strip()}", "CMD")
+            # Échec fréquent : « Installer hash does not match » — le manifeste
+            # winget référence un hash figé alors que Microsoft met à jour le
+            # setup.exe sur son CDN. On bascule alors sur l'ODT local.
+            self.log(f"Office — winget a échoué (code {code}).", "WARN")
+            return False
+
+        # Vérification réelle : winget peut retourner 0 alors que C2R a échoué.
+        for _ in range(12):
+            if any(Path(p).exists() for p in LOGICIELS["office"]["paths"]):
+                return True
+            time.sleep(10)
+        self.log("Office — winget terminé mais Office introuvable.", "WARN")
+        return False
 
     # ── Déploiement Microsoft 365 Apps for enterprise via l'ODT ───────────────
     # configuration.xml : M365 Apps entreprise, canal Current, x64, fr-CA (+en-us),
