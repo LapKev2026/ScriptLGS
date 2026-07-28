@@ -18,9 +18,8 @@ Outil de provisionnement automatisé des postes de travail pour les déploiement
 4. [Tests internes](#3-tests-internes)
 5. [Documentation](#4-documentation)
 6. [Interaction avec l'équipe de sécurité IBM](#5-interaction-proactive-et-continue-avec-léquipe-de-sécurité-ibm)
-7. [Validations obligatoires du CISO IBM](#6-obtention-des-validations-obligatoires-du-ciso-ibm)
-8. [Installation et utilisation](#installation-et-utilisation)
-9. [Historique des versions](#historique-des-versions)
+7. [Installation et utilisation](#installation-et-utilisation)
+8. [Historique des versions](#historique-des-versions)
 
 ---
 
@@ -196,39 +195,6 @@ PRISM effectue des opérations à privilèges élevés (exécution en administra
 |---|---|---|---|---|---|
 | | | | | | |
 | | | | | | |
-
----
-
-## 6. Obtention des validations obligatoires du CISO IBM
-
-La mise en production de PRISM est conditionnée à l'obtention des validations obligatoires côté CISO IBM. Cette section suit l'état de ces validations dans le cadre du plan de validation formelle en 10 phases demandé par la hiérarchie.
-
-**Plan de validation formelle en 10 phases**
-
-| Phase | Domaine | Livrable | Statut |
-|---|---|---|---|
-| 1 | Fondation / journalisation | PS1 dédié | Construit |
-| 2 | Renommage machine / config régionale (fr-CA, ISO, 24 h) | PS1 dédié | Construit |
-| 3 | Jonction Entra ID (Autopilot / PPKG / manuel) | PS1 dédié | Construit |
-| 4 | Installation des applications standard (8 apps winget + repli local) | PS1 dédié | Construit |
-| 5 | Agents AV / EDR / RMM / MDM | | À faire |
-| 6 | BitLocker + sauvegarde de la clé | | À faire |
-| 7 | Réseau / proxy / certificats / VPN | | À faire |
-| 8 | Tests post-installation | | À faire |
-| 9 | Gestion d'erreurs robuste | | À faire |
-| 10 | Signature numérique conforme IBM | | À faire |
-
-**Validations obligatoires du CISO — suivi**
-
-> **À compléter** — ne renseigner « Obtenue » qu'après réception de l'approbation formelle et signée du CISO. Ce tableau constitue la trace de conformité.
-
-| Validation requise | Prérequis | Statut | Date | Référence / approbateur |
-|---|---|---|---|---|
-| Revue d'architecture de sécurité | Phases 1–4 documentées | En attente | | |
-| Revue de la gestion des secrets (clé BitLocker) | Phase 6 complétée | En attente | | |
-| Revue du mécanisme d'élévation | Documentation technique | En attente | | |
-| Signature numérique conforme IBM | Phase 10 | En attente | | |
-| **Approbation finale CISO pour mise en production** | Toutes les validations ci-dessus | **En attente** | | |
 
 ---
 
