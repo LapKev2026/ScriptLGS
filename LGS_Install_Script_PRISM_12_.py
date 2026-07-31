@@ -66900,7 +66900,10 @@ def winget_exit_desc(code: int) -> tuple[str, str]:
         -1978335189:  ("SKIP", "Déjà à jour / pas de mise à jour disponible"),
         -1978335140:  ("SKIP", "Aucune mise à jour applicable"),
         # ── Erreurs package / source ──────────────────────────────────────────
-        -1978335215:  ("FAIL", "Package introuvable"),
+        # NB : -1978335215 (hash de manifeste périmé) est défini plus bas, dans la
+        # section « applicabilité ». Ne pas le redéclarer ici : Python conserve la
+        # DERNIÈRE occurrence, et le doublon rendait cette entrée-ci silencieusement
+        # morte.
         -1978335214:  ("FAIL", "Plusieurs packages correspondent — préciser l'ID"),
         -1978335213:  ("FAIL", "Aucun résultat pour cette recherche"),
         -1978335231:  ("FAIL", "Source introuvable"),
@@ -67731,11 +67734,26 @@ try {
         -1978335215,   # hash de manifeste périmé
     )
 
-    def _winget_install(self, pkg_id: str, name: str) -> bool:
+    def _winget_install(self, pkg_id: str, name: str,
+                        scope: str | None = "machine") -> bool:
+        """Installe un paquet winget. Retourne True si l'installation est réussie.
+
+        scope : portée demandée à winget (« machine » par défaut). Passer None pour
+        les paquets publiés UNIQUEMENT en portée utilisateur — Slack notamment, qui
+        s'installe dans %LOCALAPPDATA%. Leur imposer --scope machine fait échouer
+        winget avec -1978335216 (« aucun installeur applicable »), un code qui n'est
+        ni un succès ni transitoire : la boucle sortait donc dès le 1er essai et les
+        3 tentatives ne servaient à rien.
+
+        Par sécurité, si winget répond malgré tout -1978335216 alors qu'une portée
+        était imposée, on réessaie une fois SANS --scope plutôt que d'abandonner.
+        """
         if not self._winget_ok:
             self.log(f"{name} — winget indisponible, installation ignorée.", "WARN")
             return False
         SUCCESS_CODES = (0, 3010, 1641, -1978335212, -1978335189, -1978335140)
+        HASH_MISMATCH = -1978335215   # 0x8A150011 — hash de manifeste périmé
+        NO_APPLICABLE = -1978335216   # 0x8A150010 — aucun installeur pour cette portée
         base_cmd = [
             "winget", "install", "--id", pkg_id,
             "--exact",
@@ -67743,20 +67761,31 @@ try {
             "--silent",
             "--accept-package-agreements",
             "--accept-source-agreements",
-            "--scope", "machine",
         ]
 
         code, out = 1, ""
+        drop_scope = False               # passe à True après un -1978335216
         for attempt in range(1, 4):          # 3 tentatives maximum
             if attempt == 1:
                 self.log(f"{name} — winget install {pkg_id}", "CMD")
             else:
                 self.log(f"{name} — nouvelle tentative ({attempt}/3)...", "CMD")
             cmd = list(base_cmd)
-            if code == -1978335215:          # hash périmé : ignorer la vérif
+            if scope and not drop_scope:
+                cmd += ["--scope", scope]
+            if code == HASH_MISMATCH:        # hash périmé : ignorer la vérif
                 cmd.append("--ignore-security-hash")
             code, out = run_cmd(cmd, timeout=600)
-            if code in SUCCESS_CODES or code not in self.WINGET_TRANSIENT:
+            if code in SUCCESS_CODES:
+                break
+            if code == NO_APPLICABLE and scope and not drop_scope:
+                drop_scope = True
+                self.log(
+                    f"{name} — aucun installeur en portée « {scope} » ; "
+                    "nouvel essai sans --scope.", "WARN"
+                )
+                continue                     # pas d'attente : ce n'est pas un verrou
+            if code not in self.WINGET_TRANSIENT:
                 break
             time.sleep(30)                   # laisser le verrou MSI se libérer
 
@@ -67891,7 +67920,23 @@ try {
         if sl_installed:
             self.log("Slack déjà installé.", "SKIP")
         else:
-            self._winget_install(sl["winget_id"], "Slack")
+            # scope=None : Slack n'est publié qu'en portée utilisateur
+            # (%LOCALAPPDATA%\slack) — cf. sl["paths"]. Lui imposer --scope machine
+            # faisait échouer winget avec « aucun installeur applicable ».
+            ok = self._winget_install(sl["winget_id"], "Slack", scope=None)
+            # Vérification post-installation, comme pour les autres logiciels :
+            # le code retour de winget ne garantit pas la présence de l'exe.
+            if any(Path(p).exists() for p in sl["paths"]) or \
+               is_installed_via_registry(sl["reg_patterns"]):
+                self.log("Slack installé avec succès.", "OK")
+            elif ok:
+                self.log(
+                    "Slack — winget signale un succès mais l'exécutable est "
+                    "introuvable (installation par utilisateur : vérifier la "
+                    "session cible).", "WARN"
+                )
+            else:
+                self.log("Slack — installation non confirmée.", "WARN")
 
         # ── Box for Office ────────────────────────────────────────────────────
         self.log("Installation de Box for Office...", "INFO")
@@ -67980,18 +68025,46 @@ try {
                     else:
                         self.log(f"Intel DSA — {sig_msg}", "OK")
                         self.log("Installation Intel DSA (1-2 min)...", "CMD")
-                        run_cmd([str(tmp)] + dsa["dl_args"], timeout=300)
-                        # Le service démarre en arrière-plan : courte attente puis vérif.
-                        for _ in range(6):
-                            time.sleep(5)
+                        # Le code retour était ignoré : un refus des switches, un
+                        # blocage GPO ou une exigence de redémarrage passaient donc
+                        # inaperçus et ressortaient en simple « peut se terminer en
+                        # arrière-plan ». On le lit et on le journalise.
+                        code_dsa, out_dsa = run_cmd(
+                            [str(tmp)] + dsa["dl_args"], timeout=300
+                        )
+                        DSA_OK_CODES = (0, 3010, 1641)
+                        if code_dsa not in DSA_OK_CODES:
+                            self.log(
+                                f"Intel DSA — installeur terminé avec le code "
+                                f"{code_dsa}.", "WARN"
+                            )
+                            for line in (out_dsa or "").strip().splitlines()[:5]:
+                                if line.strip():
+                                    self.log(f"  DSA: {line.strip()}", "CMD")
+                        # Le service s'enregistre en arrière-plan. L'installeur
+                        # annonce 1-2 min : on attend donc jusqu'à 2 min (au lieu
+                        # de 30 s), ce qui évitait de conclure à un échec alors que
+                        # l'installation aboutissait juste après.
+                        for _ in range(24):
                             if _dsa_detected():
                                 break
+                            time.sleep(5)
                         if _dsa_detected():
                             self.log("Intel DSA installé avec succès.", "OK")
+                        elif code_dsa in DSA_OK_CODES:
+                            self.log(
+                                "Intel DSA — installeur sorti sans erreur mais "
+                                "service absent après 2 min ; peut se terminer "
+                                "en arrière-plan.", "WARN"
+                            )
                         else:
                             self.log(
-                                "Intel DSA — installation lancée ; "
-                                "peut se terminer en arrière-plan.", "WARN"
+                                f"Intel DSA — échec de l'installation "
+                                f"(code {code_dsa}).", "FAIL"
+                            )
+                            self.log(
+                                f"Installez manuellement : {dsa['dl_url_fallback']}",
+                                "WARN"
                             )
             except Exception as exc:
                 self.log(f"Intel DSA — erreur : {exc}", "FAIL")
