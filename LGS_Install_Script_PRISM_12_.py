@@ -66554,21 +66554,23 @@ LOGICIELS = {
     },
     "slack": {
         "winget_id": "SlackTechnologies.Slack",
-        # IMPORTANT — provisionnement : le paquet winget de Slack s'installe dans
-        # le profil de l'utilisateur COURANT (donc celui du technicien, ou du compte
-        # admin ayant servi à l'élévation UAC). L'utilisateur final n'aurait alors
-        # pas Slack. Le « Machine-Wide Installer » MSI règle le problème : il pose
-        # un stub qui installe Slack dans chaque profil à la 1re ouverture de session.
-        "dl_url":  "https://slack.com/ssb/download-win64-msi",
-        "dl_args": [],                    # MSI
+        # Portée MACHINE volontaire : en portée machine, winget sert un paquet
+        # MSIX (Slack.msix) qui est provisionné pour TOUS les profils — c'est
+        # exactement ce qu'il faut en provisionnement. En portée utilisateur,
+        # Slack n'atterrirait que dans le profil du technicien.
+        # Pas de dl_url : slack.com/ssb/download-win64-msi redirige vers un
+        # fichier absent du CDN Slack (404 vérifié) — repli inutilisable.
         "paths": [
             os.path.expandvars(r"%LOCALAPPDATA%\slack\slack.exe"),
             os.path.expandvars(r"%LOCALAPPDATA%\Programs\slack\slack.exe"),
             r"C:\Program Files\Slack\slack.exe",
             r"C:\Program Files (x86)\Slack\slack.exe",
         ],
-        # « Slack Machine-Wide Installer » est le nom affiché du MSI dans le registre.
+        # Installé en MSIX, Slack ne pose AUCUN des chemins ci-dessus (il vit dans
+        # C:\Program Files\WindowsApps). La détection repose donc sur le registre
+        # (DisplayName « Slack ») et sur le nom de paquet Appx ci-dessous.
         "reg_patterns": ["Slack"],
+        "appx_name": "*Slack*",
     },
     "adobe": {
         "winget_id": "Adobe.Acrobat.Reader.64-bit",
@@ -67817,18 +67819,31 @@ try {
                     self.log(f"  winget: {line.strip()}", "CMD")
         return code in SUCCESS_CODES
 
-    @staticmethod
-    def _soft_present(entry: dict) -> bool:
+    def _soft_present(self, entry: dict) -> bool:
         """Un logiciel du catalogue LOGICIELS est-il déjà installé ?
 
-        Combine systématiquement chemins ET clés Uninstall du registre. La
+        Combine chemins, clés Uninstall du registre et paquets MSIX/Appx. La
         détection par chemin seule ratait les installations dans un dossier
-        inhabituel ou renommé d'une version à l'autre.
+        inhabituel — et surtout les paquets MSIX, qui vivent sous
+        C:\\Program Files\\WindowsApps et n'exposent aucun chemin classique
+        (cas de Slack, servi en MSIX par winget en portée machine).
         """
         if any(Path(p).exists() for p in entry.get("paths", [])):
             return True
         pats = entry.get("reg_patterns")
-        return bool(pats) and is_installed_via_registry(pats)
+        if pats and is_installed_via_registry(pats):
+            return True
+        appx = entry.get("appx_name")
+        if appx:
+            try:
+                code, out = run_cmd(self._ps_encoded(
+                    f"if (Get-AppxPackage -Name '{appx}') {{ Write-Output 'APPX=1' }}"
+                ), timeout=45)
+                if code == 0 and "APPX=1" in (out or ""):
+                    return True
+            except Exception:
+                pass
+        return False
 
     def _install_from_url(self, name: str, url: str, tmp_name: str,
                           args: list, detect_paths: list,
@@ -67995,31 +68010,20 @@ try {
         if self._soft_present(sl):
             self.log("Slack déjà installé.", "SKIP")
         else:
-            # Méthode 1 — MSI « Machine-Wide Installer ». C'est la SEULE méthode
-            # correcte en provisionnement : le paquet winget installerait Slack
-            # dans le profil du compte courant (technicien / compte d'élévation),
-            # et l'utilisateur final se retrouverait sans Slack. Le MSI pose un
-            # stub qui installe Slack dans chaque profil à la 1re session.
-            ok = self._install_from_url(
-                "Slack (Machine-Wide)", sl["dl_url"], "Slack_MachineWide.msi",
-                sl["dl_args"], sl["paths"], reg_patterns=sl.get("reg_patterns")
-            )
-            if not ok:
-                # Méthode 2 — repli winget en portée utilisateur. Dégradé assumé :
-                # Slack n'existe pas en portée machine côté winget, d'où scope=None
-                # (sinon winget répond « aucun installeur applicable »).
+            # Portée machine : winget sert alors le paquet MSIX de Slack, qui est
+            # provisionné pour TOUS les profils — le bon comportement en
+            # provisionnement. (Vérifié : `winget show SlackTechnologies.Slack
+            # --scope machine` renvoie bien un installeur de type msix.)
+            ok = self._winget_install(sl["winget_id"], "Slack")
+            if self._soft_present(sl):
+                self.log("Slack installé avec succès.", "OK")
+            elif ok:
                 self.log(
-                    "Slack — repli winget (portée utilisateur : Slack ne sera "
-                    "installé que pour la session courante).", "WARN"
+                    "Slack — winget signale un succès mais Slack reste "
+                    "introuvable (ni chemin, ni registre, ni paquet MSIX).", "WARN"
                 )
-                ok = self._winget_install(sl["winget_id"], "Slack", scope=None)
-                if ok and not self._soft_present(sl):
-                    self.log(
-                        "Slack — winget signale un succès mais l'exécutable est "
-                        "introuvable (vérifier la session cible).", "WARN"
-                    )
-                elif not ok:
-                    self.log("Slack — installation non confirmée.", "WARN")
+            else:
+                self.log("Slack — installation non confirmée.", "WARN")
 
         # ── Box for Office ────────────────────────────────────────────────────
         self.log("Installation de Box for Office...", "INFO")

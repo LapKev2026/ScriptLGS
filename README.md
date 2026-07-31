@@ -110,7 +110,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 | Application | Méthode primaire | Replis |
 |---|---|---|
 | Microsoft 365 Apps | winget + `configuration.xml` LGS | ODT local, puis ODT téléchargé du CDN |
-| Slack | **MSI Machine-Wide** (`slack.com/ssb/download-win64-msi`) | winget en portée utilisateur (dégradé) |
+| Slack | winget **en portée machine** → paquet MSIX provisionné pour tous les profils | — (le MSI `slack.com/ssb` redirige vers un fichier absent du CDN) |
 | Google Chrome | winget | MSI Chrome Enterprise, puis installeur `.exe` |
 | Firefox | winget | MSI `fr-CA`, puis installeur `.exe` |
 | Intel DSA | winget `Intel.IntelDriverAndSupportAssistant` | téléchargement direct `dsadata.intel.com` |
@@ -119,7 +119,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 | Pilote NVIDIA / NVIDIA App | CDN NVIDIA (lookup de version) | URL de repli figée |
 | Lenovo Commercial Vantage | `VantageInstaller.exe` du paquet de déploiement | — |
 
-> **Slack et la portée d'installation** — le paquet winget de Slack s'installe dans le profil de l'utilisateur *courant*, c'est-à-dire celui du technicien ou du compte ayant servi à l'élévation UAC : l'utilisateur final se retrouverait sans Slack. Le Machine-Wide Installer dépose un stub qui installe Slack dans chaque profil à la première ouverture de session — c'est la seule méthode correcte en provisionnement.
+> **Slack et la portée d'installation** — en portée machine, winget sert le paquet **MSIX** de Slack, provisionné pour tous les profils : c'est le comportement attendu en provisionnement, et la raison pour laquelle `--scope machine` est conservé. En portée utilisateur, Slack n'atterrirait que dans le profil du technicien. Conséquence importante pour la détection : un Slack installé en MSIX réside dans `C:\Program Files\WindowsApps` et n'expose **aucun** des chemins classiques — d'où la détection par registre et par nom de paquet Appx (`appx_name`).
 7. **Favoris Microsoft Edge** — écriture des favoris dans les profils + activation de la barre des favoris.
 8. **Configuration Windows** — écran de veille (Ribbons.scr, 10 min, verrouillage), désactivation du démarrage rapide, restauration des paramètres de veille sauvegardés.
 9. **Windows Update** — PSWindowsUpdate avec repli sur l'agent COM natif (WUA), après détection d'un éventuel redémarrage en attente.
