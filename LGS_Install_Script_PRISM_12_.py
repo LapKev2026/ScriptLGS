@@ -69149,6 +69149,27 @@ function Emit($k, $v) {
     }
 }
 
+# Choisit le numéro de série disque le plus exploitable parmi plusieurs sources.
+# Selon le pilote NVMe, Windows expose soit le numéro imprimé sur l'étiquette
+# (ex. 2343X801559), soit l'EUI-64 du contrôleur (ex. 0025_38CC_51B0_1788), qui
+# n'est PAS le numéro de série et ne sert à rien pour l'inventaire ou le SAV.
+# On écarte donc les valeurs de forme EUI et on garde le premier vrai numéro.
+function Get-CleanSerial($candidates) {
+    foreach ($c in $candidates) {
+        if ($null -eq $c) { continue }
+        $s = "$c".Trim().TrimEnd('.')
+        if ($s -eq '') { continue }
+        # EUI-64 : 4 groupes de 4 chiffres hexa (avec ou sans séparateur)
+        if ($s -match '^[0-9A-Fa-f]{4}([ _-]?[0-9A-Fa-f]{4}){3}$') { continue }
+        return $s
+    }
+    # Aucune source « propre » : renvoyer la première valeur non vide plutôt que rien.
+    foreach ($c in $candidates) {
+        if ($null -ne $c -and "$c".Trim() -ne '') { return "$c".Trim().TrimEnd('.') }
+    }
+    return $null
+}
+
 # ── Identité machine ──────────────────────────────────────────────────────
 try {
     $cs   = Get-CimInstance Win32_ComputerSystem        -ErrorAction SilentlyContinue
@@ -69200,6 +69221,12 @@ try {
 try {
     $pd = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage `
                             -ClassName MSFT_PhysicalDisk -ErrorAction SilentlyContinue)
+    # Sources complémentaires pour le numéro de série (cf. Get-CleanSerial) :
+    # Win32_DiskDrive et MSFT_Disk exposent souvent le numéro de l'étiquette
+    # là où MSFT_PhysicalDisk ne renvoie que l'EUI-64 du contrôleur NVMe.
+    $w32  = @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)
+    $mdsk = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage `
+                              -ClassName MSFT_Disk -ErrorAction SilentlyContinue)
     if ($pd.Count -gt 0) {
         $i = 0
         foreach ($d in $pd) {
@@ -69208,19 +69235,28 @@ try {
             $bus  = switch ($d.BusType)   { 17 {'NVMe'} 11 {'SATA'} 7 {'USB'} default {''} }
             $sz   = [math]::Round($d.Size / 1GB, 0)
             Emit "Disque$i" (("$($d.FriendlyName) — $sz Go $type $bus") -replace '\s+', ' ')
-            # N° de série du disque : présent sur MSFT_PhysicalDisk et propre
-            # (contrairement à Win32_DiskDrive qui le retourne parfois encodé).
-            if ($d.SerialNumber) { Emit "DisqueSerie$i" ($d.SerialNumber.Trim()) }
+            # Corréler les trois classes sur le même disque physique :
+            # MSFT_PhysicalDisk.DeviceId == Win32_DiskDrive.Index == MSFT_Disk.Number
+            $num = $null
+            if ($d.DeviceId -match '^\d+$') { $num = [int]$d.DeviceId }
+            $sw = $null; $sm = $null
+            if ($null -ne $num) {
+                $sw = ($w32  | Where-Object { $_.Index  -eq $num } | Select-Object -First 1).SerialNumber
+                $sm = ($mdsk | Where-Object { $_.Number -eq $num } | Select-Object -First 1).SerialNumber
+            }
+            $serial = Get-CleanSerial @($sw, $sm, $d.SerialNumber)
+            if ($serial) { Emit "DisqueSerie$i" $serial }
             if ($d.FirmwareVersion) { Emit "DisqueFirmware$i" ($d.FirmwareVersion.Trim()) }
         }
     } else {
         # Repli si l'espace de noms Storage est indisponible.
         $i = 0
-        foreach ($d in @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)) {
+        foreach ($d in $w32) {
             $i++
             $sz = [math]::Round($d.Size / 1GB, 0)
             Emit "Disque$i" "$($d.Model) — $sz Go"
-            if ($d.SerialNumber) { Emit "DisqueSerie$i" ($d.SerialNumber.Trim()) }
+            $serial = Get-CleanSerial @($d.SerialNumber)
+            if ($serial) { Emit "DisqueSerie$i" $serial }
         }
     }
     $c = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
