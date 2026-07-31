@@ -67064,29 +67064,13 @@ class InstallWorker(QThread):
         # Conservé en mémoire pour un futur rapport de provisioning.
         self.inventory: dict = {}
 
-        # SEC-4 — Le log est placé dans %PROGRAMDATA%\LGS\Logs (accessible aux
-        # administrateurs uniquement) plutôt que sur le bureau public. Un raccourci
-        # sur le bureau est créé pour faciliter l'accès à l'opérateur.
-        # En cas d'échec (partition pleine, droits…), fallback silencieux vers le
-        # bureau (comportement identique à l'ancien code).
+        # Le log est écrit directement sur le bureau : c'est là que le technicien
+        # le cherche en fin de provisionnement. Une version antérieure le plaçait
+        # dans %PROGRAMDATA%\LGS\Logs avec des ACL restreintes ; en pratique cela
+        # obligeait à passer par un raccourci pour le consulter, sans bénéfice réel.
         ts = self.start_time.strftime("%Y-%m-%d_%H-%M-%S")
         cn = self.machine_info.get("computer_name") or platform.node()
-        log_filename = f"LGS_Log_Detaile_{cn}_{ts}.txt"
-        programdata = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
-        log_dir = programdata / "LGS" / "Logs"
-        try:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            # Restreindre les ACL : Administrateurs + SYSTEM uniquement (icacls).
-            run_cmd([
-                "icacls", str(log_dir),
-                "/inheritance:r",
-                "/grant:r", "BUILTIN\\Administrators:(OI)(CI)F",
-                "/grant:r", "NT AUTHORITY\\SYSTEM:(OI)(CI)F",
-            ], timeout=15)
-            self.log_path = log_dir / log_filename
-        except Exception:
-            # Fallback : bureau de l'utilisateur courant
-            self.log_path = get_desktop() / log_filename
+        self.log_path = get_desktop() / f"LGS_Log_Detaile_{cn}_{ts}.txt"
         build, version = get_windows_build()
         header = (
             "╔══════════════════════════════════════════════════════════════╗\n"
@@ -69358,9 +69342,10 @@ try {
                             shown.add(f"{sub_key}{idx}")
 
     def save_log(self):
-        """Ajoute le pied de page (fin/durée) au log écrit au fil de l'eau,
-        puis crée un raccourci sur le bureau pointant vers le fichier log.
-        Le raccourci permet un accès rapide même si le log est dans %PROGRAMDATA%.
+        """Ajoute le pied de page (fin/durée) au log écrit au fil de l'eau.
+
+        Le log étant écrit directement sur le bureau, aucun raccourci n'est créé :
+        le fichier est déjà à l'endroit où le technicien le cherche.
         """
         duration = round((datetime.now() - self.start_time).total_seconds() / 60, 1)
         footer = (
@@ -69379,29 +69364,6 @@ try {
             self.log(f"Impossible de finaliser le log : {exc}", "WARN")
         finally:
             self._close_log_file()
-
-        # Créer un raccourci bureau → log (même si le log est dans %PROGRAMDATA%).
-        # L'icône %SystemRoot%\System32\shell32.dll,70 ressemble à un bloc-notes.
-        if self.log_path and Path(self.log_path).exists():
-            try:
-                lnk = get_desktop() / f"{Path(self.log_path).name}.lnk"
-                ps_lnk = (
-                    f"$s = (New-Object -COM WScript.Shell).CreateShortcut('{lnk}');"
-                    f"$s.TargetPath = '{self.log_path}';"
-                    "$s.IconLocation = '%SystemRoot%\\System32\\shell32.dll,70';"
-                    "$s.Description = 'Journal d installation PRISM — LGS';"
-                    "$s.Save()"
-                )
-                code_lnk, _ = run_cmd(
-                    ["powershell", "-NoProfile", "-Command", ps_lnk],
-                    timeout=15
-                )
-                if code_lnk == 0:
-                    self.log(f"Raccourci log créé sur le bureau : {lnk.name}", "OK")
-                else:
-                    self.log("Raccourci log — création échouée (non bloquant).", "WARN")
-            except Exception as exc_lnk:
-                self.log(f"Raccourci log — erreur : {exc_lnk}", "WARN")
 
     # ─────────────────────────────────────────────────────────────────────────
     # POINT D'ENTRÉE DU THREAD
@@ -70073,7 +70035,7 @@ class PRISMWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Log introuvable",
                                     "Le fichier log est introuvable.\n"
-                                    "Emplacement attendu : %PROGRAMDATA%\\LGS\\Logs\\")
+                                    "Emplacement attendu : le bureau.")
         except Exception as exc:
             QMessageBox.warning(self, "Erreur", f"Impossible d'ouvrir le log :\n{exc}")
 

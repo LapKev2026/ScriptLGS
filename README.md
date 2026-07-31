@@ -46,7 +46,7 @@ Deux implémentations fonctionnellement équivalentes sont maintenues en parall�
 - Détection de langue ; détection matérielle robuste des GPU NVIDIA (par ID fabricant PCI `VEN_10DE`) avec installation du pilote et de NVIDIA App (Entreprise) ; automatisation Windows Update
 - **Inventaire matériel** du poste collecté et journalisé au démarrage (purement informatif, sans effet sur le provisionnement)
 - Téléchargements résilients : contexte TLS enrichi des magasins de certificats Windows, avec repli sur `curl.exe` (Schannel)
-- Journal détaillé écrit dans `%PROGRAMDATA%\LGS\Logs` (ACL restreintes Administrateurs + SYSTEM) avec raccourci d'accès sur le bureau
+- Journal détaillé écrit directement sur le bureau, à l'endroit où le technicien le cherche
 - Nettoyage automatique du dossier de déploiement compagnon en fin d'exécution
 - Journalisation incrémentale et journal de crash automatique
 
@@ -76,7 +76,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 - **Téléchargements résilients** — le helper `download_file` tente d'abord `urlopen` avec un contexte TLS construit à partir des magasins de certificats Windows (`ROOT` et `CA`, via `ssl.enum_certificates`), puis se replie sur `curl.exe` (intégré depuis Windows 10 1803), qui s'appuie sur Schannel. Ce double chemin évite les échecs de validation de certificat derrière un proxy d'inspection TLS d'entreprise.
 - **Inventaire matériel informatif** — `collect_inventory` / `log_inventory` interrogent CIM au démarrage et consignent la configuration du poste dans le journal. La collecte est volontairement non bloquante : elle ne lève jamais, et aucune décision d'installation n'en dépend.
 - **Nettoyage en fin de course** — `_cleanup_deploy_folder` supprime `C:\LGS_Deploy` une fois le provisionnement terminé (best-effort : les fichiers verrouillés sont ignorés, l'attribut lecture seule est levé si besoin, et une erreur n'interrompt jamais le script).
-- **Journal à emplacement protégé** — le journal détaillé est écrit dans `%PROGRAMDATA%\LGS\Logs` avec des ACL restreintes (Administrateurs + SYSTEM via `icacls`) plutôt que sur le bureau public ; un raccourci est déposé sur le bureau pour l'accès de l'opérateur, avec repli silencieux vers le bureau si l'emplacement protégé est inaccessible.
+- **Journal sur le bureau** — le journal détaillé est écrit directement sur le bureau de l'opérateur. Une itération intermédiaire l'avait déplacé dans `%PROGRAMDATA%\LGS\Logs` avec des ACL restreintes ; en pratique cela imposait de passer par un raccourci pour le consulter, pour un gain opérationnel nul — le choix a donc été annulé.
 - **Configuration externalisée** — paramètres structurés en JSON, séparés de la logique, pour faciliter la maintenance sans toucher au code.
 
 ---
@@ -107,7 +107,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 9. **Windows Update** — PSWindowsUpdate avec repli sur l'agent COM natif (WUA), après détection d'un éventuel redémarrage en attente.
 10. **BitLocker → Entra ID** (`dsregcmd`, `Get-Tpm`, `Enable-BitLocker` XTS-AES-256, `BackupToAAD-BitLockerKeyProtector`, confirmation via event 845 ; **la clé de récupération n'est jamais journalisée**).
 
-*En clôture* : récapitulatif des actions, détection d'un redémarrage requis, suppression du dossier de déploiement `C:\LGS_Deploy`, puis écriture du journal dans `%PROGRAMDATA%\LGS\Logs` avec dépôt d'un raccourci d'accès sur le bureau.
+*En clôture* : récapitulatif des actions, détection d'un redémarrage requis, suppression du dossier de déploiement `C:\LGS_Deploy`, puis sauvegarde du journal sur le bureau.
 
 > La barre de progression de la GUI est graduée sur 11 jalons (les 10 étapes numérotées ci-dessus + l'état « Installation terminée »). L'étape 4b n'occupe pas de rang numéroté distinct.
 
@@ -122,7 +122,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 - **Renommage & raccourci via PowerShell** — le renommage machine (`Set-ItemProperty` + WMI `Rename()`, nom via `$env:PRISM_NEW_NAME`) et la création de raccourci (`WScript.Shell`) passent par PowerShell ; `Rename-Computer` est explicitement évité pour ne pas fermer la GUI.
 - **Appels centralisés** — helper unique `run_cmd` (forçage UTF-8, `CREATE_NO_WINDOW`, `env_extra`) et `_ps_encoded` (scripts PowerShell en Base64 UTF-16LE via `-EncodedCommand`, avec `$ProgressPreference='SilentlyContinue'` pour ne pas polluer la sortie des cmdlets CIM).
 - **Validation du nom d'ordinateur** par expression régulière conforme NetBIOS (`[A-Za-z0-9-]{1,15}`), dupliquée volontairement entre la validation GUI (`SetupDialog._launch`) et le thread d'exécution (`step4_computer_name`) — les deux doivent rester identiques — comme garde anti-injection avant le renommage.
-- **Journal protégé** — écrit dans `%PROGRAMDATA%\LGS\Logs` avec ACL restreintes (`icacls` : Administrateurs + SYSTEM), raccourci d'accès déposé sur le bureau, repli silencieux vers le bureau si l'emplacement est inaccessible. La clé de récupération BitLocker n'est jamais journalisée.
+- **Journal sur le bureau** — écrit au fil de l'eau sur le bureau sous `LGS_Log_Detaile_<nom>_<horodatage>.txt`, consultable immédiatement sans raccourci ni élévation. La clé de récupération BitLocker n'est jamais journalisée.
 - **Timeouts adaptatifs** par commande (30 min par défaut, 2 h pour Windows Update).
 - **Protection anti-veille** pendant le provisionnement et **mécanisme de pause** thread-safe.
 - **Assets Base64** — fichiers embarqués (PDF de procédures, DOCX, raccourcis `.url`). Un chantier d'optimisation du bloc d'assets (~66 000 lignes) est en cours : externalisation vers un dossier compagnon ou consolidation en archive unique.
@@ -192,7 +192,7 @@ PRISM effectue des opérations à privilèges élevés (exécution en administra
 - Manipulation des identités (jonction Entra ID)
 - Intégrité des installeurs téléchargés (signature Authenticode via `Get-AuthenticodeSignature` + contrôle de taille) avant exécution en administrateur
 - Politique d'exécution PowerShell (`RemoteSigned`) et prévention de l'injection lors du renommage (nom via variable d'environnement, validation NetBIOS)
-- Confidentialité du journal détaillé (emplacement `%PROGRAMDATA%` à ACL restreintes)
+- Contenu du journal détaillé (garantie qu'aucun secret n'y figure, le fichier résidant sur le bureau)
 - Intégrité des assets embarqués et absence de dépendances réseau non maîtrisées
 - Journalisation (garantie de non-fuite de secrets dans les logs)
 - Signature numérique du livrable
@@ -227,7 +227,7 @@ PRISM effectue des opérations à privilèges élevés (exécution en administra
 
 - Si rien ne s'affiche après le UAC : vérifier que PyQt6 est installé pour le bon interpréteur (`py -0p`, `assoc .py`, `ftype Python.File`).
 - Journal de crash automatique : `%TEMP%\PRISM_crash.log` (ouvert automatiquement en cas d'erreur).
-- Journal détaillé d'installation : `%PROGRAMDATA%\LGS\Logs\LGS_Log_Detaile_<nom>_<horodatage>.txt` (accès Administrateurs + SYSTEM ; un raccourci est déposé sur le bureau). Repli sur le bureau si l'emplacement est inaccessible.
+- Journal détaillé d'installation : `LGS_Log_Detaile_<nom>_<horodatage>.txt`, sur le bureau. Attention : si l'élévation UAC utilise un compte administrateur différent, le fichier atterrit sur le bureau de ce compte.
 - Paquets compagnons dans `C:\LGS_Deploy` : `CommercialVantage\VantageInstaller.exe` (Lenovo Vantage — requis, sinon l'application est ignorée) et `ODT\setup.exe` (facultatif : téléchargé automatiquement depuis le CDN Microsoft s'il est absent). Le dossier est supprimé automatiquement en fin de provisionnement.
 - Échec de téléchargement derrière un proxy d'entreprise : `download_file` bascule seul sur `curl.exe`. Si les deux chemins échouent, vérifier que le certificat d'inspection TLS est bien présent dans le magasin Windows (`ROOT` / `CA`).
 - Office installé mais en mauvaise langue / mauvais canal : vérifier que `--custom "/configure <xml>"` est bien transmis à winget — sans lui, winget appliquerait la configuration par défaut du manifeste au lieu de celle de LGS.
@@ -243,7 +243,7 @@ PRISM effectue des opérations à privilèges élevés (exécution en administra
 - **PRISM 12** (courant, Python / PyQt6, version applicative 3.8.x) — déploiement winget, sauvegarde BitLocker/Entra ID, correctifs UTF-8, élévation UAC durcie (chemin absolu + arguments quotés), relance via `pythonw.exe`, suppression des fenêtres console enfants (`CREATE_NO_WINDOW`).
   - **v3.8** — première itération du durcissement : vérification Authenticode des installeurs en repli, installation applicative pilotée par le catalogue `LOGICIELS`.
   - **v3.8.1 (courant)** — durcissement sécurité et robustesse matérielle :
-    - **Sécurité** — `verify_authenticode` bascule sur `Get-AuthenticodeSignature` (au lieu de `WinVerifyTrust`/ctypes), appliquée avant exécution à Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver et NVIDIA App (contrôle de taille + signature ; l'empreinte SHA-256 est retirée). Politique PowerShell passée de `Bypass` à `RemoteSigned`. Renommage machine sécurisé par variable d'environnement `$env:PRISM_NEW_NAME` (anti-injection). Journal déplacé dans `%PROGRAMDATA%\LGS\Logs` avec ACL restreintes (`icacls`) et raccourci bureau.
+    - **Sécurité** — `verify_authenticode` bascule sur `Get-AuthenticodeSignature` (au lieu de `WinVerifyTrust`/ctypes), appliquée avant exécution à Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver et NVIDIA App (contrôle de taille + signature ; l'empreinte SHA-256 est retirée). Politique PowerShell passée de `Bypass` à `RemoteSigned`. Renommage machine sécurisé par variable d'environnement `$env:PRISM_NEW_NAME` (anti-injection). Journal temporairement déplacé dans `%PROGRAMDATA%\LGS\Logs` avec ACL restreintes (`icacls`) — **choix annulé depuis**, le journal est de nouveau écrit sur le bureau.
     - **Détection GPU NVIDIA réécrite** — clé sur l'ID PCI `VEN_10DE` (fonctionne sur image fraîche sans pilote), version pilote via `nvidia-smi`, table `NVIDIA_DEV_NAMES` pour les GPU Ada laptop, commandes PowerShell en Base64 (`_ps_encoded` / `-EncodedCommand`), logs de diagnostic.
     - **Nouvelles installations** — pilote NVIDIA + NVIDIA App (Entreprise), Lenovo Commercial Vantage, et Microsoft 365 Apps via l'Office Deployment Tool (dossier compagnon `C:\LGS_Deploy`).
     - **Office : winget prioritaire, ODT en repli** — ajout de `_install_office_winget()` : installation par `winget install --id Microsoft.Office` avec le `configuration.xml` LGS transmis en `--custom "/configure"`, ce qui supprime l'obligation de pré-déposer `setup.exe` sur le poste. Repli automatique sur l'ODT local en cas d'échec (winget indisponible, CDN inaccessible, hash de manifeste obsolète) et vérification effective de la présence d'Office après installation.
