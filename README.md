@@ -44,7 +44,10 @@ Deux implémentations fonctionnellement équivalentes sont maintenues en parall�
 - **Vérification de la signature Authenticode des installeurs téléchargés** (`Get-AuthenticodeSignature`) avant toute exécution en administrateur ; un binaire non signé, altéré ou non fiable est rejeté
 - Assets embarqués en Base64 (aucune dépendance réseau vers SharePoint / OneDrive)
 - Détection de langue ; détection matérielle robuste des GPU NVIDIA (par ID fabricant PCI `VEN_10DE`) avec installation du pilote et de NVIDIA App (Entreprise) ; automatisation Windows Update
+- **Inventaire matériel** du poste collecté et journalisé au démarrage (purement informatif, sans effet sur le provisionnement)
+- Téléchargements résilients : contexte TLS enrichi des magasins de certificats Windows, avec repli sur `curl.exe` (Schannel)
 - Journal détaillé écrit dans `%PROGRAMDATA%\LGS\Logs` (ACL restreintes Administrateurs + SYSTEM) avec raccourci d'accès sur le bureau
+- Nettoyage automatique du dossier de déploiement compagnon en fin d'exécution
 - Journalisation incrémentale et journal de crash automatique
 
 ---
@@ -69,7 +72,10 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 - **Vérification des binaires avant exécution** — tout installeur téléchargé (repli hors winget : Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver, NVIDIA App) est contrôlé avant d'être lancé en administrateur : taille minimale et signature Authenticode de l'éditeur via la fonction `verify_authenticode` (`Get-AuthenticodeSignature`). Un fichier non signé, altéré ou non fiable est rejeté (fail-safe).
 - **Encodage UTF-8 forcé** — encodage UTF-8 (avec BOM) de bout en bout, incluant l'injection d'un préfixe console pour les appels PowerShell, afin d'éviter la corruption des accents et caractères spéciaux sur un Windows en français.
 - **Installation applicative pilotée par les données** — le catalogue logiciel (`LOGICIELS`) décrit chaque application (chemins de détection, identifiant winget, URL et méthode de repli) ; l'étape 6 l'exploite pour uniformiser détection et installation. Un dossier compagnon `C:\LGS_Deploy` (`LGS_DEPLOY_DIR`, sous-dossiers `ODT\` et `CommercialVantage\`) héberge les paquets de déploiement entreprise : il est requis pour Lenovo Commercial Vantage, et sert de repli pour Microsoft 365 Apps.
-- **Microsoft 365 Apps — winget d'abord, ODT en repli** — le paquet winget `Microsoft.Office` est le *même* `setup.exe` Click-to-Run que l'ODT, simplement téléchargé depuis le CDN Microsoft. PRISM l'installe donc via winget en lui passant **son propre `configuration.xml`** (`--custom "/configure <xml>"`), ce qui conserve la maîtrise totale du déploiement (fr-CA, canal, RemoveMSI) tout en évitant d'avoir à pré-déposer `setup.exe` sur chaque poste. En cas d'échec (winget absent, CDN inaccessible, « installer hash mismatch » du manifeste), l'ODT local prend le relais. Le succès est vérifié par la présence réelle des binaires Office, car winget peut retourner `0` alors que Click-to-Run a échoué.
+- **Microsoft 365 Apps — winget d'abord, ODT en repli** — le paquet winget `Microsoft.Office` est le *même* `setup.exe` Click-to-Run que l'ODT, simplement téléchargé depuis le CDN Microsoft. PRISM l'installe donc via winget en lui passant **son propre `configuration.xml`** (`--custom "/configure <xml>"`), ce qui conserve la maîtrise totale du déploiement (fr-CA, canal, RemoveMSI) tout en évitant d'avoir à pré-déposer `setup.exe` sur chaque poste. En cas d'échec (winget absent, CDN inaccessible, « installer hash mismatch » du manifeste), l'ODT prend le relais — et si `setup.exe` n'a pas été pré-déposé dans `C:\LGS_Deploy\ODT`, il est **téléchargé automatiquement depuis le CDN Microsoft** (`_download_odt_setup`). Le succès est vérifié par la présence réelle des binaires Office, car winget peut retourner `0` alors que Click-to-Run a échoué.
+- **Téléchargements résilients** — le helper `download_file` tente d'abord `urlopen` avec un contexte TLS construit à partir des magasins de certificats Windows (`ROOT` et `CA`, via `ssl.enum_certificates`), puis se replie sur `curl.exe` (intégré depuis Windows 10 1803), qui s'appuie sur Schannel. Ce double chemin évite les échecs de validation de certificat derrière un proxy d'inspection TLS d'entreprise.
+- **Inventaire matériel informatif** — `collect_inventory` / `log_inventory` interrogent CIM au démarrage et consignent la configuration du poste dans le journal. La collecte est volontairement non bloquante : elle ne lève jamais, et aucune décision d'installation n'en dépend.
+- **Nettoyage en fin de course** — `_cleanup_deploy_folder` supprime `C:\LGS_Deploy` une fois le provisionnement terminé (best-effort : les fichiers verrouillés sont ignorés, l'attribut lecture seule est levé si besoin, et une erreur n'interrompt jamais le script).
 - **Journal à emplacement protégé** — le journal détaillé est écrit dans `%PROGRAMDATA%\LGS\Logs` avec des ACL restreintes (Administrateurs + SYSTEM via `icacls`) plutôt que sur le bureau public ; un raccourci est déposé sur le bureau pour l'accès de l'opérateur, avec repli silencieux vers le bureau si l'emplacement protégé est inaccessible.
 - **Configuration externalisée** — paramètres structurés en JSON, séparés de la logique, pour faciliter la maintenance sans toucher au code.
 
@@ -87,7 +93,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 
 **Étapes du flux de provisionnement (implémentation Python)**
 
-*Actions préliminaires* (au démarrage du thread de travail) : protection anti-veille (`powercfg`, restaurée à l'étape 8) et test de disponibilité de winget avec mise à jour des sources.
+*Actions préliminaires* (au démarrage du thread de travail) : protection anti-veille (`powercfg`, restaurée à l'étape 8), test de disponibilité de winget avec mise à jour des sources, et collecte de l'**inventaire matériel** consigné au journal.
 
 1. **Création du dossier CAT** sur le bureau.
 2. **Extraction des fichiers embarqués** (Base64) dans le dossier CAT (PDF de procédures, raccourcis `.url`, etc.).
@@ -101,7 +107,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 9. **Windows Update** — PSWindowsUpdate avec repli sur l'agent COM natif (WUA), après détection d'un éventuel redémarrage en attente.
 10. **BitLocker → Entra ID** (`dsregcmd`, `Get-Tpm`, `Enable-BitLocker` XTS-AES-256, `BackupToAAD-BitLockerKeyProtector`, confirmation via event 845 ; **la clé de récupération n'est jamais journalisée**).
 
-*En clôture* : récapitulatif des actions, détection d'un redémarrage requis, puis écriture du journal dans `%PROGRAMDATA%\LGS\Logs` avec dépôt d'un raccourci d'accès sur le bureau.
+*En clôture* : récapitulatif des actions, détection d'un redémarrage requis, suppression du dossier de déploiement `C:\LGS_Deploy`, puis écriture du journal dans `%PROGRAMDATA%\LGS\Logs` avec dépôt d'un raccourci d'accès sur le bureau.
 
 > La barre de progression de la GUI est graduée sur 11 jalons (les 10 étapes numérotées ci-dessus + l'état « Installation terminée »). L'étape 4b n'occupe pas de rang numéroté distinct.
 
@@ -221,7 +227,8 @@ PRISM effectue des opérations à privilèges élevés (exécution en administra
 - Si rien ne s'affiche après le UAC : vérifier que PyQt6 est installé pour le bon interpréteur (`py -0p`, `assoc .py`, `ftype Python.File`).
 - Journal de crash automatique : `%TEMP%\PRISM_crash.log` (ouvert automatiquement en cas d'erreur).
 - Journal détaillé d'installation : `%PROGRAMDATA%\LGS\Logs\LGS_Log_Detaile_<nom>_<horodatage>.txt` (accès Administrateurs + SYSTEM ; un raccourci est déposé sur le bureau). Repli sur le bureau si l'emplacement est inaccessible.
-- Paquets compagnons attendus dans `C:\LGS_Deploy` : `CommercialVantage\` (Lenovo Vantage, requis) et `ODT\setup.exe` (repli pour Microsoft 365 Apps si winget échoue). Leur absence n'interrompt pas le provisionnement mais l'application concernée est ignorée.
+- Paquets compagnons dans `C:\LGS_Deploy` : `CommercialVantage\VantageInstaller.exe` (Lenovo Vantage — requis, sinon l'application est ignorée) et `ODT\setup.exe` (facultatif : téléchargé automatiquement depuis le CDN Microsoft s'il est absent). Le dossier est supprimé automatiquement en fin de provisionnement.
+- Échec de téléchargement derrière un proxy d'entreprise : `download_file` bascule seul sur `curl.exe`. Si les deux chemins échouent, vérifier que le certificat d'inspection TLS est bien présent dans le magasin Windows (`ROOT` / `CA`).
 - Office installé mais en mauvaise langue / mauvais canal : vérifier que `--custom "/configure <xml>"` est bien transmis à winget — sans lui, winget appliquerait la configuration par défaut du manifeste au lieu de celle de LGS.
 - Attention : si l'élévation utilise un compte administrateur différent, le journal de crash est écrit dans le `%TEMP%` de ce compte.
 
@@ -239,5 +246,6 @@ PRISM effectue des opérations à privilèges élevés (exécution en administra
     - **Détection GPU NVIDIA réécrite** — clé sur l'ID PCI `VEN_10DE` (fonctionne sur image fraîche sans pilote), version pilote via `nvidia-smi`, table `NVIDIA_DEV_NAMES` pour les GPU Ada laptop, commandes PowerShell en Base64 (`_ps_encoded` / `-EncodedCommand`), logs de diagnostic.
     - **Nouvelles installations** — pilote NVIDIA + NVIDIA App (Entreprise), Lenovo Commercial Vantage, et Microsoft 365 Apps via l'Office Deployment Tool (dossier compagnon `C:\LGS_Deploy`).
     - **Office : winget prioritaire, ODT en repli** — ajout de `_install_office_winget()` : installation par `winget install --id Microsoft.Office` avec le `configuration.xml` LGS transmis en `--custom "/configure"`, ce qui supprime l'obligation de pré-déposer `setup.exe` sur le poste. Repli automatique sur l'ODT local en cas d'échec (winget indisponible, CDN inaccessible, hash de manifeste obsolète) et vérification effective de la présence d'Office après installation.
+    - **Résilience réseau & inventaire** — helper `download_file` (contexte TLS enrichi des magasins Windows via `ssl.enum_certificates`, repli `curl.exe`/Schannel) appliqué aux téléchargements ; `_download_odt_setup()` récupère `setup.exe` depuis le CDN Microsoft quand l'ODT n'est pas pré-déposé ; ajout d'un **inventaire matériel** non bloquant (`collect_inventory` / `log_inventory`) consigné au journal ; nettoyage automatique de `C:\LGS_Deploy` en fin d'exécution (`_cleanup_deploy_folder`).
     - **Revirement d'architecture** — le raccourci `CAT.lnk` (COM `WScript.Shell`) et le renommage machine (`Set-ItemProperty` + WMI `Rename()`) sont désormais réalisés via PowerShell plutôt qu'en API natives ctypes ; `Rename-Computer` reste évité. Helper d'appels unifié `run_cmd`.
     - **Qualité** — `urlretrieve` (dépréciée) remplacée par `urlopen` + `copyfileobj` (Adobe).

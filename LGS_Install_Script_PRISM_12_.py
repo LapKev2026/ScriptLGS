@@ -45,8 +45,77 @@ import time
 import platform
 import base64
 import urllib.request
+import ssl
 from datetime import datetime
 from pathlib import Path
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIANCE TLS — MAGASIN DE CERTIFICATS WINDOWS
+# ═══════════════════════════════════════════════════════════════════════════════
+# Derrière un proxy à inspection SSL (cas LGS/IBM), le certificat présenté est
+# réémis par l'autorité racine de l'entreprise. Windows la connaît — c'est pour
+# ça que les navigateurs et winget fonctionnent — mais Python utilise SON PROPRE
+# magasin et échoue avec :
+#     CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate
+# On injecte donc les magasins Windows ROOT + CA dans le contexte TLS par défaut,
+# puis on l'installe globalement : tous les urlopen() du script en bénéficient.
+def _build_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    for store in ("ROOT", "CA"):
+        try:
+            for cert, enc, _trust in ssl.enum_certificates(store):
+                if enc != "x509_asn":
+                    continue
+                try:
+                    ctx.load_verify_locations(cadata=cert)
+                except ssl.SSLError:
+                    pass  # certificat expiré ou malformé : sans importance
+        except Exception:
+            pass  # enum_certificates absent (non-Windows) — on garde le défaut
+    return ctx
+
+
+SSL_CONTEXT = _build_ssl_context()
+try:
+    urllib.request.install_opener(
+        urllib.request.build_opener(urllib.request.HTTPSHandler(context=SSL_CONTEXT))
+    )
+except Exception:
+    pass
+
+
+def download_file(url: str, dest: Path, timeout: int = 300) -> tuple[bool, str]:
+    """Télécharge url vers dest. Retourne (succès, message).
+
+    Deux tentatives successives :
+    1. urlopen avec le contexte TLS enrichi des magasins Windows ;
+    2. curl.exe (intégré à Windows 10 1803+), qui utilise Schannel et donc
+       directement le magasin Windows — filet de sécurité si le certificat
+       d'entreprise n'est pas exposé via enum_certificates.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout, context=SSL_CONTEXT) as resp, \
+             open(dest, "wb") as fh:
+            shutil.copyfileobj(resp, fh)
+        if dest.exists() and dest.stat().st_size > 0:
+            return True, "téléchargé"
+    except Exception as exc:
+        err = str(exc)
+        curl = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "curl.exe"
+        if not curl.exists():
+            return False, err
+        code, out = run_cmd(
+            [str(curl), "-L", "--fail", "--silent", "--show-error",
+             "-o", str(dest), url],
+            timeout=timeout
+        )
+        if code == 0 and dest.exists() and dest.stat().st_size > 0:
+            return True, "téléchargé via curl.exe (magasin Windows)"
+        return False, f"{err} | curl: {(out or '').strip()[:200]}"
+    return False, "fichier vide"
 
 # Dossier unique de dépôt des paquets de déploiement compagnons (ODT, Vantage…).
 # Sous-dossiers attendus : ODT\  et  CommercialVantage\
@@ -66440,7 +66509,7 @@ STEPS = [
     "Diagnostic système",
     "Création des dossiers",
     "Fichiers documentation",
-    "Raccourcis bureau",
+    "Bureau utilisateur",
     "Nom d'ordinateur",
     "Microsoft Office",
     "Logiciels (Firefox, Chrome…)",
@@ -66853,6 +66922,11 @@ def winget_exit_desc(code: int) -> tuple[str, str]:
         -1978334948:  ("FAIL", "Dépendance manquante"),
         -1978334947:  ("FAIL", "Impossible de désinstaller la version précédente"),
         -1978334946:  ("FAIL", "Conflit avec un package existant"),
+        # ── Erreurs de manifeste / applicabilité ──────────────────────────────
+        -1978335216:  ("FAIL", "Aucun installeur applicable à ce système "
+                               "(architecture, portée ou version Windows)"),
+        -1978335215:  ("FAIL", "Hash du manifeste périmé (installeur mis à jour "
+                               "côté éditeur)"),
         # ── Erreurs de configuration / droits ────────────────────────────────
         -1978335008:  ("FAIL", "Droits insuffisants (relancer en admin)"),
         -1978335007:  ("FAIL", "Volume chiffré non supporté"),
@@ -66975,6 +67049,12 @@ class InstallWorker(QThread):
         self._stop_event   = threading.Event()
         # Test winget effectué dans run() avant les étapes
         self._winget_ok: bool = False
+        # Drapeaux de redémarrage, consolidés par _check_reboot_required().
+        self._renamed: bool = False
+        self._reboot_pending_seen: bool = False
+        # Inventaire matériel, rempli par log_inventory() au début de run().
+        # Conservé en mémoire pour un futur rapport de provisioning.
+        self.inventory: dict = {}
 
         # SEC-4 — Le log est placé dans %PROGRAMDATA%\LGS\Logs (accessible aux
         # administrateurs uniquement) plutôt que sur le bureau public. Un raccourci
@@ -67233,34 +67313,31 @@ class InstallWorker(QThread):
                 self.log(f"Erreur extraction {nom} : {exc}", "FAIL")
 
         self.step(2, "done", f"{len(FICHIERS_EMBARQUES)} fichier(s) extraits")
-        self.progress(3, "Étape 3/11 — Raccourcis bureau")
+        self.progress(3, "Étape 3/11 — Bureau utilisateur")
 
 
     def step3_shortcuts(self):
-        self.step(3, "active", "Création des raccourcis...")
-        self.log("RACCOURCIS BUREAU", "SECTION")
+        self.step(3, "active", "Vérification du bureau...")
+        self.log("BUREAU UTILISATEUR", "SECTION")
 
-        desktop  = get_desktop()
-        cat_path = desktop / "CAT"
-        lnk      = desktop / "CAT.lnk"
+        desktop = get_desktop()
+        lnk     = desktop / "CAT.lnk"
 
-        # Création via PowerShell COM (WScript.Shell) — aucune dépendance externe,
-        # disponible sur tout Windows, même approche que le PS1.
-        ps_cmd = (
-            f"$s = (New-Object -COM WScript.Shell).CreateShortcut('{lnk}');"
-            f"$s.TargetPath = '{cat_path}';"
-            f"$s.Save()"
-        )
-        code, out = run_cmd(
-            ["powershell", "-NoProfile", "-Command", ps_cmd],
-            timeout=30
-        )
-        if code == 0:
-            self.log(f"Raccourci créé : {lnk}", "OK")
+        # Le dossier CAT est créé à l'étape 2 DIRECTEMENT sur le bureau : un
+        # raccourci vers lui, posé sur ce même bureau, ne fait que dupliquer
+        # l'icône. On ne le crée donc plus.
+        # On supprime en revanche celui laissé par les versions précédentes, pour
+        # que les postes déjà provisionnés se nettoient à la prochaine exécution.
+        if lnk.exists():
+            try:
+                lnk.unlink()
+                self.log("Raccourci CAT redondant supprimé du bureau.", "OK")
+            except Exception as exc:
+                self.log(f"Raccourci CAT — suppression impossible : {exc}", "WARN")
         else:
-            self.log(f"Raccourci bureau — erreur (code {code}) : {out.strip()}", "WARN")
+            self.log("Dossier CAT accessible directement sur le bureau.", "INFO")
 
-        self.step(3, "done", "Raccourcis créés")
+        self.step(3, "done", "Bureau vérifié")
         self.progress(4, "Étape 4/11 — Nom d'ordinateur")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -67327,6 +67404,9 @@ try {
             out_clean = out.strip()
             if "OK" in out_clean and "FAIL" not in out_clean:
                 self.log(f"Nom changé en : {new_name} (effectif au prochain redémarrage)", "OK")
+                # Un renommage impose un redémarrage : mémorisé pour le
+                # bilan final (_check_reboot_required).
+                self._renamed = True
             else:
                 detail = out_clean.replace("FAIL:", "").strip() or f"code {code}"
                 self.log(f"Impossible de renommer : {detail}", "WARN")
@@ -67474,16 +67554,29 @@ try {
         # Pas de --silent ici : le mode silencieux vient de <Display Level="None"/>
         # dans le XML. Ajouter --silent ferait entrer les switches du manifeste en
         # conflit avec /configure.
-        code, out = run_cmd([
-            "winget", "install", "--id", "Microsoft.Office",
-            "--exact",
-            "--source", "winget",
-            "--accept-package-agreements",
-            "--accept-source-agreements",
-            "--custom", f'/configure "{cfg}"',
-        ], timeout=3600)
-
         SUCCESS_CODES = (0, 3010, 1641)
+        HASH_MISMATCH = -1978335215   # 0x8A150011 APPINSTALLER_CLI_ERROR_INSTALLER_HASH_MISMATCH
+
+        def _run_winget(extra: list[str]) -> tuple[int, str]:
+            return run_cmd([
+                "winget", "install", "--id", "Microsoft.Office",
+                "--exact",
+                "--source", "winget",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--custom", f'/configure "{cfg}"',
+            ] + extra, timeout=3600)
+
+        code, out = _run_winget([])
+
+        if code == HASH_MISMATCH:
+            # Cause connue : le manifeste winget fige un hash alors que Microsoft
+            # met à jour setup.exe sur son CDN — le paquet Microsoft.Office casse
+            # donc périodiquement. Le binaire vient bien du CDN Microsoft en HTTPS,
+            # et il est de toute façon vérifié par Authenticode au repli ODT.
+            self.log("Office — hash du manifeste winget périmé, nouvelle tentative.", "WARN")
+            code, out = _run_winget(["--ignore-security-hash"])
+
         if code not in SUCCESS_CODES:
             for line in (out or "").strip().splitlines()[:6]:
                 if line.strip():
@@ -67545,14 +67638,47 @@ try {
                 continue
         return None
 
+    # setup.exe Click-to-Run servi par le CDN Office de Microsoft. C'est le même
+    # binaire que celui extrait de l'ODT du Centre de téléchargement. Le domaine
+    # officecdn.microsoft.com doit de toute façon être autorisé par le pare-feu,
+    # sans quoi aucune installation Office ne peut aboutir.
+    # Le fichier téléchargé est VÉRIFIÉ PAR AUTHENTICODE avant exécution : s'il
+    # n'est pas signé Microsoft, il est rejeté.
+    ODT_CDN_URL = "https://officecdn.microsoft.com/pr/wsus/setup.exe"
+
+    def _download_odt_setup(self) -> Path | None:
+        """Télécharge setup.exe (ODT) depuis le CDN Microsoft. None si échec.
+
+        Évite d'avoir à déposer manuellement setup.exe dans C:\\LGS_Deploy\\ODT.
+        """
+        dest = Path(tempfile.gettempdir()) / "PRISM_ODT" / "setup.exe"
+        self.log("ODT — téléchargement de setup.exe depuis le CDN Microsoft...", "CMD")
+        ok, msg = download_file(self.ODT_CDN_URL, dest, timeout=300)
+        if not ok:
+            self.log(f"ODT — téléchargement échoué : {msg}", "WARN")
+            return None
+
+        sig_ok, sig_msg = verify_authenticode(dest)
+        if not sig_ok:
+            self.log(f"ODT — signature invalide : {sig_msg} — fichier rejeté.", "FAIL")
+            try:
+                dest.unlink()
+            except Exception:
+                pass
+            return None
+        self.log(f"ODT — setup.exe {msg}, signature vérifiée ({sig_msg}).", "OK")
+        return dest
+
     def _install_office_odt(self) -> bool:
-        # 1. Localiser l'ODT (setup.exe). ~3,4 Mo, à déposer dans C:\LGS_Deploy\ODT.
+        # 1. Localiser l'ODT (setup.exe) : dépôt local d'abord, sinon CDN Microsoft.
         setup = self._find_odt_setup()
         if setup is None:
+            setup = self._download_odt_setup()
+        if setup is None:
             self.log(
-                "ODT introuvable. Déposez le setup.exe de l'Office Deployment "
-                "Tool dans C:\\LGS_Deploy\\ODT\\, puis relancez. "
-                "Téléchargement : "
+                "ODT indisponible (ni local, ni téléchargeable). "
+                "Déposez le setup.exe de l'Office Deployment Tool dans "
+                "C:\\LGS_Deploy\\ODT\\, puis relancez. Téléchargement : "
                 "https://www.microsoft.com/download/details.aspx?id=49117",
                 "WARN"
             )
@@ -67596,12 +67722,21 @@ try {
     # ÉTAPE 6 — Logiciels (Firefox, Chrome, Slack, Adobe, Intel DSA)
     # ─────────────────────────────────────────────────────────────────────────
 
+    # Codes transitoires : une autre installation MSI/C2R tient le verrou
+    # Windows Installer. Fréquent quand deux paquets s'enchaînent (observé :
+    # Slack lancé dans la même seconde que la fin de Chrome). Un simple délai
+    # suffit — inutile de faire échouer le logiciel pour ça.
+    WINGET_TRANSIENT = (
+        -1978334957,   # installation bloquée (autre processus en cours)
+        -1978335215,   # hash de manifeste périmé
+    )
+
     def _winget_install(self, pkg_id: str, name: str) -> bool:
         if not self._winget_ok:
             self.log(f"{name} — winget indisponible, installation ignorée.", "WARN")
             return False
-        self.log(f"{name} — winget install {pkg_id}", "CMD")
-        code, out = run_cmd([
+        SUCCESS_CODES = (0, 3010, 1641, -1978335212, -1978335189, -1978335140)
+        base_cmd = [
             "winget", "install", "--id", pkg_id,
             "--exact",
             "--source", "winget",
@@ -67609,9 +67744,23 @@ try {
             "--accept-package-agreements",
             "--accept-source-agreements",
             "--scope", "machine",
-        ], timeout=600)
+        ]
+
+        code, out = 1, ""
+        for attempt in range(1, 4):          # 3 tentatives maximum
+            if attempt == 1:
+                self.log(f"{name} — winget install {pkg_id}", "CMD")
+            else:
+                self.log(f"{name} — nouvelle tentative ({attempt}/3)...", "CMD")
+            cmd = list(base_cmd)
+            if code == -1978335215:          # hash périmé : ignorer la vérif
+                cmd.append("--ignore-security-hash")
+            code, out = run_cmd(cmd, timeout=600)
+            if code in SUCCESS_CODES or code not in self.WINGET_TRANSIENT:
+                break
+            time.sleep(30)                   # laisser le verrou MSI se libérer
+
         self.log_winget(name, code)
-        SUCCESS_CODES = (0, 3010, 1641, -1978335212, -1978335189, -1978335140)
         # Logger les premières lignes de sortie winget si échec — aide au diagnostic
         if code not in SUCCESS_CODES and out.strip():
             for line in out.strip().splitlines()[:5]:
@@ -68642,6 +68791,9 @@ try {
                 pass
 
         if reboot_required:
+            # Mémorisé pour le bilan final (_check_reboot_required), qui
+            # annonçait « aucun redémarrage nécessaire » malgré ce constat.
+            self._reboot_pending_seen = True
             self.log(
                 "⚠️  REDÉMARRAGE EN ATTENTE détecté — Windows Update ne peut pas "
                 "installer de nouvelles mises à jour tant que la machine n'a pas redémarré.", "WARN"
@@ -68894,6 +69046,194 @@ try {
     # SAUVEGARDE DU LOG
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # INVENTAIRE MATÉRIEL
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Script CIM unique : un seul processus PowerShell pour tout collecter.
+    # Chaque valeur est émise sous la forme « INV|clé|valeur » — parsing par
+    # sentinelle, insensible à tout bruit résiduel dans la sortie (leçon tirée
+    # du bug de détection NVIDIA). Chaque bloc a son propre try/catch : une
+    # requête qui échoue n'empêche jamais les autres de remonter.
+    INVENTORY_PS = r"""
+function Emit($k, $v) {
+    if ($null -ne $v -and "$v".Trim() -ne '') {
+        Write-Output ("INV|" + $k + "|" + ("$v" -replace '[\r\n]+', ' ').Trim())
+    }
+}
+
+# ── Identité machine ──────────────────────────────────────────────────────
+try {
+    $cs   = Get-CimInstance Win32_ComputerSystem        -ErrorAction SilentlyContinue
+    $bios = Get-CimInstance Win32_BIOS                  -ErrorAction SilentlyContinue
+    $csp  = Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue
+
+    Emit 'Fabricant' $cs.Manufacturer
+    Emit 'Modele'    $cs.Model
+    # Sur Lenovo, Model contient le code machine (ex. 21F6CTO1WW) et le nom
+    # commercial (ex. ThinkPad P14s Gen 4) est dans ComputerSystemProduct.Version.
+    if ($csp.Version -and $csp.Version -ne $cs.Model -and
+        $csp.Version -notmatch '^(None|System Version|Default string)$') {
+        Emit 'ModeleCommercial' $csp.Version
+    }
+    Emit 'NumeroSerie' $bios.SerialNumber
+    Emit 'BIOS' $bios.SMBIOSBIOSVersion
+    if ($bios.ReleaseDate) { Emit 'BIOSDate' ($bios.ReleaseDate.ToString('yyyy-MM-dd')) }
+} catch {}
+
+# ── Processeur ────────────────────────────────────────────────────────────
+try {
+    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue |
+           Select-Object -First 1
+    Emit 'CPU' $cpu.Name
+    Emit 'CPUCoeurs' ("$($cpu.NumberOfCores) coeurs / $($cpu.NumberOfLogicalProcessors) threads")
+} catch {}
+
+# ── Mémoire ───────────────────────────────────────────────────────────────
+try {
+    $ram = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+    if ($ram.Count -gt 0) {
+        $totalGB = [math]::Round((($ram | Measure-Object Capacity -Sum).Sum) / 1GB, 0)
+        $slots = (Get-CimInstance Win32_PhysicalMemoryArray -ErrorAction SilentlyContinue |
+                  Select-Object -First 1).MemoryDevices
+        if ($slots) { Emit 'RAMTotal' "$totalGB Go ($($ram.Count) barrette(s) sur $slots emplacement(s))" }
+        else        { Emit 'RAMTotal' "$totalGB Go ($($ram.Count) barrette(s))" }
+        $i = 0
+        foreach ($m in $ram) {
+            $i++
+            $cap = [math]::Round($m.Capacity / 1GB, 0)
+            $spd = if ($m.Speed) { " @ $($m.Speed) MHz" } else { "" }
+            $pn  = if ($m.PartNumber) { " — $($m.PartNumber.Trim())" } else { "" }
+            Emit "RAM$i" ("$cap Go$spd$pn")
+        }
+    }
+} catch {}
+
+# ── Disques ───────────────────────────────────────────────────────────────
+try {
+    $pd = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage `
+                            -ClassName MSFT_PhysicalDisk -ErrorAction SilentlyContinue)
+    if ($pd.Count -gt 0) {
+        $i = 0
+        foreach ($d in $pd) {
+            $i++
+            $type = switch ($d.MediaType) { 3 {'HDD'} 4 {'SSD'} 5 {'SCM'} default {''} }
+            $bus  = switch ($d.BusType)   { 17 {'NVMe'} 11 {'SATA'} 7 {'USB'} default {''} }
+            $sz   = [math]::Round($d.Size / 1GB, 0)
+            Emit "Disque$i" (("$($d.FriendlyName) — $sz Go $type $bus") -replace '\s+', ' ')
+            # N° de série du disque : présent sur MSFT_PhysicalDisk et propre
+            # (contrairement à Win32_DiskDrive qui le retourne parfois encodé).
+            if ($d.SerialNumber) { Emit "DisqueSerie$i" ($d.SerialNumber.Trim()) }
+            if ($d.FirmwareVersion) { Emit "DisqueFirmware$i" ($d.FirmwareVersion.Trim()) }
+        }
+    } else {
+        # Repli si l'espace de noms Storage est indisponible.
+        $i = 0
+        foreach ($d in @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)) {
+            $i++
+            $sz = [math]::Round($d.Size / 1GB, 0)
+            Emit "Disque$i" "$($d.Model) — $sz Go"
+            if ($d.SerialNumber) { Emit "DisqueSerie$i" ($d.SerialNumber.Trim()) }
+        }
+    }
+    $c = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
+    if ($c) {
+        Emit 'VolumeC' ("$([math]::Round($c.Size/1GB,0)) Go total / $([math]::Round($c.FreeSpace/1GB,0)) Go libres")
+    }
+} catch {}
+
+# ── Cartes réseau (physiques uniquement) ──────────────────────────────────
+try {
+    # PhysicalAdapter + PNPDeviceID PCI/USB : exclut les adaptateurs virtuels
+    # (VPN, Hyper-V, loopback) qui sont en ROOT\* et pollueraient l'inventaire.
+    $nics = @(Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.PhysicalAdapter -eq $true -and $_.MACAddress -and
+                  ($_.PNPDeviceID -like 'PCI\*' -or $_.PNPDeviceID -like 'USB\*')
+              })
+    $i = 0
+    foreach ($n in $nics) {
+        $i++
+        Emit "MAC$i" "$($n.MACAddress) — $($n.Name)"
+    }
+} catch {}
+"""
+
+    # Ordre d'affichage ; les familles dynamiques (RAM/Disque/MAC) sont ajoutées
+    # ensuite par préfixe, triées naturellement.
+    INVENTORY_LABELS = [
+        ("Fabricant",       "Fabricant"),
+        ("ModeleCommercial", "Modèle"),
+        ("Modele",          "Code machine"),
+        ("NumeroSerie",     "N° de série"),
+        ("BIOS",            "BIOS"),
+        ("BIOSDate",        "Date BIOS"),
+        ("CPU",             "Processeur"),
+        ("CPUCoeurs",       "Cœurs"),
+        ("RAMTotal",        "Mémoire"),
+        ("VolumeC",         "Volume C:"),
+    ]
+
+    def collect_inventory(self) -> dict:
+        """Collecte l'inventaire matériel via CIM. Retourne un dict clé → valeur.
+
+        Ne lève jamais et ne bloque jamais l'installation : en cas d'échec, on
+        retourne ce qui a pu être lu (éventuellement un dict vide).
+        """
+        try:
+            code, out = run_cmd(self._ps_encoded(self.INVENTORY_PS), timeout=90)
+        except Exception as exc:
+            self.log(f"Inventaire — collecte impossible : {exc}", "WARN")
+            return {}
+        inv = {}
+        for line in (out or "").splitlines():
+            line = line.strip()
+            if not line.startswith("INV|"):
+                continue
+            parts = line.split("|", 2)
+            if len(parts) == 3 and parts[1].strip() and parts[2].strip():
+                inv.setdefault(parts[1].strip(), parts[2].strip())
+        return inv
+
+    def log_inventory(self):
+        """Journalise l'inventaire matériel et le mémorise dans self.inventory.
+
+        Purement informatif : aucune décision d'installation n'en dépend, donc
+        un échec ici n'a aucun impact sur la suite du provisioning.
+        """
+        self.log("INVENTAIRE MATÉRIEL", "SECTION")
+        inv = self.collect_inventory()
+        self.inventory = inv
+
+        if not inv:
+            self.log("Inventaire indisponible — requêtes CIM sans réponse.", "WARN")
+            return
+
+        shown = set()
+        for key, label in self.INVENTORY_LABELS:
+            if key in inv:
+                self.log(f"{label:<14}: {inv[key]}", "INFO")
+                shown.add(key)
+
+        # Familles dynamiques : RAM1..n, Disque1..n, MAC1..n
+        for prefix, label in (("RAM", "Barrette"), ("Disque", "Disque"), ("MAC", "MAC")):
+            keys = sorted(
+                (k for k in inv if k not in shown and re.fullmatch(prefix + r"\d+", k)),
+                key=lambda k: int(re.sub(r"\D", "", k))
+            )
+            for k in keys:
+                idx = re.sub(r"\D", "", k)
+                self.log(f"{label + ' ' + idx:<14}: {inv[k]}", "INFO")
+                shown.add(k)
+                # Détails rattachés au disque courant (n° de série, firmware).
+                if prefix == "Disque":
+                    for sub_key, sub_label in (("DisqueSerie", "N° série"),
+                                               ("DisqueFirmware", "Firmware")):
+                        val = inv.get(f"{sub_key}{idx}")
+                        if val:
+                            self.log(f"{'  ↳ ' + sub_label:<14}: {val}", "INFO")
+                            shown.add(f"{sub_key}{idx}")
+
     def save_log(self):
         """Ajoute le pied de page (fin/durée) au log écrit au fil de l'eau,
         puis crée un raccourci sur le bureau pointant vers le fichier log.
@@ -68948,6 +69288,12 @@ try {
         # Protection anti-veille : désactivée dès le début, restaurée dans step8.
         self._save_and_disable_sleep()
 
+        # ── Inventaire matériel ───────────────────────────────────────────────
+        # Collecté avant toute installation : l'état matériel est ainsi consigné
+        # tel qu'à la réception du poste. Purement informatif — n'influence
+        # aucune étape et ne peut pas interrompre le provisioning.
+        self.log_inventory()
+
         # ── Test de disponibilité de winget ───────────────────────────────────
         self.log("TEST WINGET", "SECTION")
         code_w, out_w = run_cmd(["winget", "--version"], timeout=15)
@@ -68960,9 +69306,11 @@ try {
             # msstore et échoue avec 0x8A15005E (certificate pinning) derrière
             # un proxy à inspection SSL, polluant tout le reste.
             self.log("Mise à jour de la source winget...", "CMD")
+            # NOTE : pas de --accept-source-agreements ici. `winget source update`
+            # ne l'accepte pas et retourne 0x8A150002 (INVALID_CL_ARGUMENTS) en
+            # n'affichant que sa bannière — c'était l'échec observé en production.
             code_su, out_su = run_cmd([
-                "winget", "source", "update", "--name", "winget",
-                "--accept-source-agreements"
+                "winget", "source", "update", "--name", "winget"
             ], timeout=60)
             if code_su == 0:
                 self.log("Source winget mise à jour.", "OK")
@@ -69058,7 +69406,6 @@ try {
         actions = [
             "Création du dossier CAT sur le bureau",
             "Extraction des fichiers de documentation",
-            "Raccourci CAT créé sur le bureau",
             "Nom d'ordinateur configuré",
             "Microsoft Office — installation tentée",
             "Logiciels : Firefox, Chrome, Slack, Box for Office, Box Tools, Adobe, Intel DSA",
@@ -69076,9 +69423,24 @@ try {
         self.log("  • Vérification complète de la checklist LGS", "INFO")
 
     def _check_reboot_required(self):
-        """Vérifie les clés de registre indiquant qu'un redémarrage est requis
-        (Windows Update, CBS). Reproduit la logique de fin de script PS1.
+        """Vérifie si un redémarrage est requis.
+
+        Trois sources, et non plus seulement le registre : le renommage du poste
+        et un redémarrage déjà en attente étaient ignorés, d'où le message
+        contradictoire « Aucun redémarrage nécessaire » alors que la machine
+        venait d'être renommée et qu'un reboot était signalé plus haut.
         """
+        reasons = []
+
+        # 1. Renommage effectué durant cette exécution → reboot obligatoire.
+        if getattr(self, "_renamed", False):
+            reasons.append("changement de nom d'ordinateur")
+
+        # 2. Redémarrage déjà signalé en attente durant l'exécution.
+        if getattr(self, "_reboot_pending_seen", False):
+            reasons.append("mises à jour Windows en attente")
+
+        # 3. Clés de registre Windows Update / CBS.
         reboot_keys = [
             (winreg.HKEY_LOCAL_MACHINE,
              r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"),
@@ -69088,14 +69450,18 @@ try {
         for hive, path in reboot_keys:
             try:
                 with winreg.OpenKey(hive, path):
-                    self.log(
-                        "REDÉMARRAGE REQUIS — Veuillez redémarrer manuellement "
-                        "après vérification.", "WARN"
-                    )
-                    return
+                    reasons.append("composants Windows en attente")
+                    break
             except OSError:
                 continue
-        self.log("Aucun redémarrage nécessaire détecté.", "OK")
+
+        if reasons:
+            self.log(
+                "REDÉMARRAGE REQUIS (" + ", ".join(dict.fromkeys(reasons)) + ") — "
+                "redémarrez la machine après vérification.", "WARN"
+            )
+        else:
+            self.log("Aucun redémarrage nécessaire détecté.", "OK")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
