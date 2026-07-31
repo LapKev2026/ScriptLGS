@@ -66523,33 +66523,51 @@ STEPS = [
 LOGICIELS = {
     "firefox": {
         "winget_id": "Mozilla.Firefox",
-        "dl_url":    "https://download.mozilla.org/?product=firefox-latest&os=win64&lang=fr",
-        "dl_args":   ["/S"],
+        # Repli en MSI (et non plus l'installeur .exe grand public) : déployable,
+        # idempotent, et cohérent avec les stratégies Firefox posées au registre.
+        # Langue fr-CA plutôt que fr : c'est la locale des postes LGS.
+        "dl_url":    "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64-msi&lang=fr-CA",
+        "dl_args":   [],                  # MSI : arguments gérés par msiexec
+        # Ancien installeur .exe conservé en 2e repli si l'URL MSI change.
+        "dl_url_legacy":  "https://download.mozilla.org/?product=firefox-latest&os=win64&lang=fr",
+        "dl_args_legacy": ["/S"],
         "paths": [
             r"C:\Program Files\Mozilla Firefox\firefox.exe",
             r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
         ],
+        "reg_patterns": ["Mozilla Firefox"],
     },
     "chrome": {
         "winget_id": "Google.Chrome",
-        "dl_url":    "https://dl.google.com/chrome/install/latest/chrome_installer.exe",
-        "dl_args":   ["/silent", "/install"],
+        # MSI Chrome Enterprise : installation machine déterministe, contrairement
+        # à chrome_installer.exe dont la portée dépend du contexte d'exécution.
+        "dl_url":    "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi",
+        "dl_args":   [],                  # MSI
+        "dl_url_legacy":  "https://dl.google.com/chrome/install/latest/chrome_installer.exe",
+        "dl_args_legacy": ["/silent", "/install"],
         "paths": [
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
         ],
+        "reg_patterns": ["Google Chrome"],
     },
     "slack": {
         "winget_id": "SlackTechnologies.Slack",
-        # Slack s'installe dans %LOCALAPPDATA% (user) ou Program Files (machine).
-        # On couvre les deux cas + détection registre en fallback.
+        # IMPORTANT — provisionnement : le paquet winget de Slack s'installe dans
+        # le profil de l'utilisateur COURANT (donc celui du technicien, ou du compte
+        # admin ayant servi à l'élévation UAC). L'utilisateur final n'aurait alors
+        # pas Slack. Le « Machine-Wide Installer » MSI règle le problème : il pose
+        # un stub qui installe Slack dans chaque profil à la 1re ouverture de session.
+        "dl_url":  "https://slack.com/ssb/download-win64-msi",
+        "dl_args": [],                    # MSI
         "paths": [
             os.path.expandvars(r"%LOCALAPPDATA%\slack\slack.exe"),
             os.path.expandvars(r"%LOCALAPPDATA%\Programs\slack\slack.exe"),
             r"C:\Program Files\Slack\slack.exe",
             r"C:\Program Files (x86)\Slack\slack.exe",
         ],
+        # « Slack Machine-Wide Installer » est le nom affiché du MSI dans le registre.
         "reg_patterns": ["Slack"],
     },
     "adobe": {
@@ -66558,6 +66576,7 @@ LOGICIELS = {
             r"C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
             r"C:\Program Files (x86)\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe",
         ],
+        "reg_patterns": ["Adobe Acrobat"],
     },
     "box_for_office": {
         "winget_id": "Box.BoxForOffice",
@@ -66582,7 +66601,10 @@ LOGICIELS = {
         "reg_patterns": ["Box Tools"],
     },
     "intel_dsa": {
-        "winget_id": None,
+        # winget en primaire : identifiant versionné et signé, contrairement à
+        # l'URL dsadata.intel.com qui pointe toujours sur « le dernier » installeur
+        # sans garantie de forme. Le téléchargement direct reste en repli.
+        "winget_id": "Intel.IntelDriverAndSupportAssistant",
         "dl_url":          "https://dsadata.intel.com/installer",
         "dl_url_fallback": "https://www.intel.com/content/www/us/en/support/intel-driver-and-support-assistant.html",
         "dl_args":   ["-s", "-norestart"],
@@ -67795,19 +67817,41 @@ try {
                     self.log(f"  winget: {line.strip()}", "CMD")
         return code in SUCCESS_CODES
 
+    @staticmethod
+    def _soft_present(entry: dict) -> bool:
+        """Un logiciel du catalogue LOGICIELS est-il déjà installé ?
+
+        Combine systématiquement chemins ET clés Uninstall du registre. La
+        détection par chemin seule ratait les installations dans un dossier
+        inhabituel ou renommé d'une version à l'autre.
+        """
+        if any(Path(p).exists() for p in entry.get("paths", [])):
+            return True
+        pats = entry.get("reg_patterns")
+        return bool(pats) and is_installed_via_registry(pats)
+
     def _install_from_url(self, name: str, url: str, tmp_name: str,
                           args: list, detect_paths: list,
-                          extra_headers: dict | None = None) -> bool:
-        """Télécharge un installer, l'exécute, puis vérifie la présence de l'exe cible.
+                          extra_headers: dict | None = None,
+                          reg_patterns: list | None = None) -> bool:
+        """Télécharge un installeur, l'exécute, puis confirme l'installation.
+
+        - Le téléchargement passe par download_file() : contexte TLS enrichi des
+          magasins Windows puis repli curl.exe/Schannel (indispensable derrière le
+          proxy à inspection SSL).
+        - Un fichier .msi est lancé via msiexec /i /qn /norestart ; les .exe
+          reçoivent `args` tels quels.
+        - La confirmation combine chemins ET registre, comme partout ailleurs.
 
         Retourne True si l'installation est confirmée, False sinon.
         """
         tmp = Path(tempfile.gettempdir()) / tmp_name
         try:
             self.log(f"Téléchargement {name}...", "CMD")
-            req = urllib.request.Request(url, headers=extra_headers or {})
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                tmp.write_bytes(resp.read())
+            ok_dl, msg_dl = download_file(url, tmp, timeout=300)
+            if not ok_dl:
+                self.log(f"{name} — téléchargement échoué : {msg_dl}", "WARN")
+                return False
             # Vérification taille minimale : un fichier < 100 KB est presque
             # certainement une page d'erreur HTML, pas un installeur valide.
             file_size = tmp.stat().st_size
@@ -67824,18 +67868,33 @@ try {
             else:
                 self.log(f"{name} — signature invalide : {sig_msg} — installation annulée.", "FAIL")
                 return False
-            run_cmd([str(tmp)] + args)
-            # Vérification post-installation
-            if detect_paths and any(Path(p).exists() for p in detect_paths):
+
+            if tmp.suffix.lower() == ".msi":
+                cmd = ["msiexec", "/i", str(tmp), "/qn", "/norestart"] + list(args)
+            else:
+                cmd = [str(tmp)] + list(args)
+            code_i, out_i = run_cmd(cmd, timeout=900)
+            if code_i not in (0, 3010, 1641):
+                self.log(f"{name} — installeur terminé avec le code {code_i}.", "WARN")
+                for line in (out_i or "").strip().splitlines()[:3]:
+                    if line.strip():
+                        self.log(f"  {name}: {line.strip()}", "CMD")
+
+            # Vérification post-installation : chemins + registre.
+            found = bool(detect_paths) and any(Path(p).exists() for p in detect_paths)
+            if not found and reg_patterns:
+                found = is_installed_via_registry(reg_patterns)
+            if found:
                 self.log(f"{name} installé avec succès.", "OK")
                 return True
-            elif detect_paths:
-                self.log(f"{name} — exécutable introuvable après installation.", "WARN")
+            if detect_paths or reg_patterns:
+                self.log(f"{name} — introuvable après installation.", "WARN")
                 return False
-            else:
-                # Pas de chemin de détection (ex : installeur auto-updater) — on fait confiance au code retour
+            # Aucun moyen de détection fourni : s'en remettre au code retour.
+            if code_i in (0, 3010, 1641):
                 self.log(f"{name} — installeur terminé (vérification manuelle recommandée).", "OK")
                 return True
+            return False
         except Exception as exc:
             self.log(f"{name} — erreur : {exc}", "FAIL")
             return False
@@ -67852,31 +67911,53 @@ try {
         # ── Firefox ───────────────────────────────────────────────────────────
         self.log("Installation de Firefox...", "INFO")
         ff = LOGICIELS["firefox"]
-        if any(Path(p).exists() for p in ff["paths"]):
+        if self._soft_present(ff):
             self.log("Firefox déjà installé.", "SKIP")
         else:
             # Méthode 1 : winget (préféré — gère les mises à jour auto)
             ok = self._winget_install(ff["winget_id"], "Firefox")
+            # winget peut retourner 0 sans que le logiciel soit réellement présent :
+            # on confirme avant de conclure (cf. le cas observé sur Office).
+            if ok and not self._soft_present(ff):
+                self.log("Firefox — winget signale un succès mais rien d'installé.", "WARN")
+                ok = False
             if not ok:
-                # Méthode 2 : téléchargement direct
+                # Méthode 2 : MSI déployable
+                ok = self._install_from_url(
+                    "Firefox", ff["dl_url"], "Firefox_Setup.msi",
+                    ff["dl_args"], ff["paths"], reg_patterns=ff.get("reg_patterns")
+                )
+            if not ok:
+                # Méthode 3 : installeur .exe historique (si l'URL MSI a changé)
                 self._install_from_url(
-                    "Firefox", ff["dl_url"], "Firefox_Setup.exe",
-                    ff["dl_args"], ff["paths"]
+                    "Firefox (installeur .exe)", ff["dl_url_legacy"],
+                    "Firefox_Setup.exe", ff["dl_args_legacy"], ff["paths"],
+                    reg_patterns=ff.get("reg_patterns")
                 )
 
         # ── Google Chrome ─────────────────────────────────────────────────────
         self.log("Installation de Google Chrome...", "INFO")
         ch = LOGICIELS["chrome"]
-        if any(Path(p).exists() for p in ch["paths"]):
+        if self._soft_present(ch):
             self.log("Google Chrome déjà installé.", "SKIP")
         else:
             # Méthode 1 : winget
             ok = self._winget_install(ch["winget_id"], "Chrome")
+            if ok and not self._soft_present(ch):
+                self.log("Chrome — winget signale un succès mais rien d'installé.", "WARN")
+                ok = False
             if not ok:
-                # Méthode 2 : téléchargement direct
+                # Méthode 2 : MSI Chrome Enterprise (portée machine déterministe)
+                ok = self._install_from_url(
+                    "Chrome", ch["dl_url"], "Chrome_Enterprise.msi",
+                    ch["dl_args"], ch["paths"], reg_patterns=ch.get("reg_patterns")
+                )
+            if not ok:
+                # Méthode 3 : installeur grand public (si l'URL MSI a changé)
                 self._install_from_url(
-                    "Chrome", ch["dl_url"], "Chrome_Installer.exe",
-                    ch["dl_args"], ch["paths"]
+                    "Chrome (installeur .exe)", ch["dl_url_legacy"],
+                    "Chrome_Installer.exe", ch["dl_args_legacy"], ch["paths"],
+                    reg_patterns=ch.get("reg_patterns")
                 )
 
         # ── Pages d'accueil www.lgs.com ───────────────────────────────────────
@@ -67911,42 +67992,45 @@ try {
         # ── Slack ─────────────────────────────────────────────────────────────
         self.log("Installation de Slack...", "INFO")
         sl = LOGICIELS["slack"]
-        sl_installed = (
-            any(Path(p).exists() for p in sl["paths"])
-            or is_installed_via_registry(sl["reg_patterns"])
-        )
-        if sl_installed:
+        if self._soft_present(sl):
             self.log("Slack déjà installé.", "SKIP")
         else:
-            # scope=None : Slack n'est publié qu'en portée utilisateur
-            # (%LOCALAPPDATA%\slack) — cf. sl["paths"]. Lui imposer --scope machine
-            # faisait échouer winget avec « aucun installeur applicable ».
-            ok = self._winget_install(sl["winget_id"], "Slack", scope=None)
-            # Vérification post-installation, comme pour les autres logiciels :
-            # le code retour de winget ne garantit pas la présence de l'exe.
-            if any(Path(p).exists() for p in sl["paths"]) or \
-               is_installed_via_registry(sl["reg_patterns"]):
-                self.log("Slack installé avec succès.", "OK")
-            elif ok:
+            # Méthode 1 — MSI « Machine-Wide Installer ». C'est la SEULE méthode
+            # correcte en provisionnement : le paquet winget installerait Slack
+            # dans le profil du compte courant (technicien / compte d'élévation),
+            # et l'utilisateur final se retrouverait sans Slack. Le MSI pose un
+            # stub qui installe Slack dans chaque profil à la 1re session.
+            ok = self._install_from_url(
+                "Slack (Machine-Wide)", sl["dl_url"], "Slack_MachineWide.msi",
+                sl["dl_args"], sl["paths"], reg_patterns=sl.get("reg_patterns")
+            )
+            if not ok:
+                # Méthode 2 — repli winget en portée utilisateur. Dégradé assumé :
+                # Slack n'existe pas en portée machine côté winget, d'où scope=None
+                # (sinon winget répond « aucun installeur applicable »).
                 self.log(
-                    "Slack — winget signale un succès mais l'exécutable est "
-                    "introuvable (installation par utilisateur : vérifier la "
-                    "session cible).", "WARN"
+                    "Slack — repli winget (portée utilisateur : Slack ne sera "
+                    "installé que pour la session courante).", "WARN"
                 )
-            else:
-                self.log("Slack — installation non confirmée.", "WARN")
+                ok = self._winget_install(sl["winget_id"], "Slack", scope=None)
+                if ok and not self._soft_present(sl):
+                    self.log(
+                        "Slack — winget signale un succès mais l'exécutable est "
+                        "introuvable (vérifier la session cible).", "WARN"
+                    )
+                elif not ok:
+                    self.log("Slack — installation non confirmée.", "WARN")
 
         # ── Box for Office ────────────────────────────────────────────────────
         self.log("Installation de Box for Office...", "INFO")
         bfo = LOGICIELS["box_for_office"]
-        bfo_installed = (
-            any(Path(p).exists() for p in bfo["paths"])
-            or is_installed_via_registry(bfo["reg_patterns"])
-        )
-        if bfo_installed:
+        if self._soft_present(bfo):
             self.log("Box for Office déjà installé.", "SKIP")
         else:
             ok = self._winget_install(bfo["winget_id"], "Box for Office")
+            if ok and not self._soft_present(bfo):
+                self.log("Box for Office — winget signale un succès mais rien d'installé.", "WARN")
+                ok = False
             if not ok:
                 self.log(
                     "Box for Office — échec winget. "
@@ -67956,14 +68040,13 @@ try {
         # ── Box Tools ─────────────────────────────────────────────────────────
         self.log("Installation de Box Tools...", "INFO")
         bt = LOGICIELS["box_tools"]
-        bt_installed = (
-            any(Path(p).exists() for p in bt["paths"])
-            or is_installed_via_registry(bt["reg_patterns"])
-        )
-        if bt_installed:
+        if self._soft_present(bt):
             self.log("Box Tools déjà installé.", "SKIP")
         else:
             ok = self._winget_install(bt["winget_id"], "Box Tools")
+            if ok and not self._soft_present(bt):
+                self.log("Box Tools — winget signale un succès mais rien d'installé.", "WARN")
+                ok = False
             if not ok:
                 self.log(
                     "Box Tools — échec winget. "
@@ -67973,11 +68056,15 @@ try {
         # ── Adobe Acrobat Reader ──────────────────────────────────────────────
         self.log("Installation d'Adobe Acrobat Reader...", "INFO")
         adobe = LOGICIELS["adobe"]
-        if any(Path(p).exists() for p in adobe["paths"]):
+        if self._soft_present(adobe):
             self.log("Adobe déjà installé.", "SKIP")
         else:
             ok = self._winget_install(adobe["winget_id"], "Adobe Acrobat Reader")
+            if ok and not self._soft_present(adobe):
+                self.log("Adobe Reader — winget signale un succès mais rien d'installé.", "WARN")
+                ok = False
             if not ok:
+                # Repli : API Adobe (endpoint non documenté — traité comme fragile).
                 self._install_adobe_direct()
 
         # ── Intel DSA ─────────────────────────────────────────────────────────
@@ -67994,10 +68081,16 @@ try {
 
         if _dsa_detected():
             self.log("Intel DSA déjà installé.", "SKIP")
+        elif dsa.get("winget_id") and self._winget_install(
+                dsa["winget_id"], "Intel DSA") and _dsa_detected():
+            # Méthode 1 : winget — paquet versionné et signé, sans dépendre d'une
+            # URL « toujours le dernier » dont la forme n'est pas garantie.
+            self.log("Intel DSA installé via winget.", "OK")
         else:
-            # Méthode simple, identique au script PowerShell qui fonctionnait :
-            # GET direct sur dsadata.intel.com/installer (urllib suit la
-            # redirection tout seul), puis exécution avec -s -norestart.
+            # Méthode 2 : téléchargement direct sur dsadata.intel.com/installer
+            # (urllib suit la redirection), puis exécution avec -s -norestart.
+            if dsa.get("winget_id"):
+                self.log("Intel DSA — repli sur le téléchargement direct.", "INFO")
             tmp = Path(tempfile.gettempdir()) / "Intel-DSA-Installer.exe"
             try:
                 self.log("Téléchargement Intel DSA...", "CMD")
