@@ -66913,11 +66913,16 @@ def winget_exit_desc(code: int) -> tuple[str, str]:
         -1978335227:  ("FAIL", "Source désactivée"),
         -1978335232:  ("FAIL", "Winget non initialisé / sources non acceptées"),
         # ── Erreurs d'installation ────────────────────────────────────────────
-        -1978334975:  ("FAIL", "Espace disque insuffisant"),
+        -1978334971:  ("FAIL", "Espace disque insuffisant"),   # 0x8A150105 (et non 0x8A150101)
         -1978334960:  ("FAIL", "Téléchargement échoué"),
         -1978334959:  ("FAIL", "Hash invalide — fichier corrompu ou modifié"),
         -1978334958:  ("FAIL", "Impossible de lancer l'installeur"),
-        -1978334957:  ("FAIL", "Installation bloquée (autre processus en cours)"),
+        # 0x8A150101-0103 : les VRAIS codes de verrou (réessayés, cf. WINGET_TRANSIENT)
+        -1978334975:  ("FAIL", "Application en cours d'exécution — la fermer puis réessayer"),
+        -1978334974:  ("FAIL", "Une autre installation est déjà en cours"),
+        -1978334973:  ("FAIL", "Un ou plusieurs fichiers sont en cours d'utilisation"),
+        # 0x8A150113 : condition permanente — ne PAS réessayer.
+        -1978334957:  ("FAIL", "Paquet non supporté par ce système"),
         -1978334956:  ("FAIL", "Annulé par l'utilisateur"),
         -1978334955:  ("FAIL", "Installeur introuvable après téléchargement"),
         -1978334954:  ("FAIL", "Mauvais type d'installeur pour ce système"),
@@ -67729,9 +67734,18 @@ try {
     # Windows Installer. Fréquent quand deux paquets s'enchaînent (observé :
     # Slack lancé dans la même seconde que la fin de Chrome). Un simple délai
     # suffit — inutile de faire échouer le logiciel pour ça.
+    # CORRECTIF : -1978334957 figurait ici comme « autre processus en cours ».
+    # C'est en réalité 0x8A150113 INSTALL_SYSTEM_NOT_SUPPORTED (paquet non
+    # supporté par le système) — une condition PERMANENTE : on perdait 3 essais
+    # et 60 s d'attente pour un cas qui ne pouvait jamais se résoudre. Pendant ce
+    # temps le vrai code de verrou, 0x8A150102 INSTALL_IN_PROGRESS, était absent
+    # de la liste et n'était donc jamais réessayé — exactement le scénario que ce
+    # mécanisme était censé couvrir.
     WINGET_TRANSIENT = (
-        -1978334957,   # installation bloquée (autre processus en cours)
-        -1978335215,   # hash de manifeste périmé
+        -1978334974,   # 0x8A150102 INSTALL_IN_PROGRESS — autre installation en cours
+        -1978334975,   # 0x8A150101 INSTALL_PACKAGE_IN_USE — application en cours d'exécution
+        -1978334973,   # 0x8A150103 INSTALL_FILE_IN_USE — fichier verrouillé
+        -1978335215,   # 0x8A150011 INSTALLER_HASH_MISMATCH — hash de manifeste périmé
     )
 
     def _winget_install(self, pkg_id: str, name: str,
