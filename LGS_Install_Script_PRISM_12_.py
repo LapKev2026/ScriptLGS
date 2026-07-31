@@ -68979,23 +68979,59 @@ try {
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
+$prevPolicy = $null
 try {
     Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers -EA SilentlyContinue | Out-Null
-    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -EA SilentlyContinue
+    # Mémoriser la politique PSGallery : le poste livré ne doit pas rester avec
+    # un dépôt marqué Trusted (elle est restaurée dans le finally).
+    $prevPolicy = (Get-PSRepository -Name PSGallery -EA SilentlyContinue).InstallationPolicy
     if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -EA SilentlyContinue
         Install-Module -Name PSWindowsUpdate -Force -Scope AllUsers -AllowClobber -Repository PSGallery -EA Stop | Out-Null
     }
     Import-Module PSWindowsUpdate -Force -EA Stop
-    $updates = Get-WindowsUpdate -AcceptAll -IgnoreReboot -EA Stop
-    if ($updates.Count -gt 0) {
-        $updates | ForEach-Object { Write-Host "UPDATE: $($_.Title)" }
-        Install-WindowsUpdate -AcceptAll -IgnoreReboot -AutoReboot:$false -EA Stop | Out-Null
-        Write-Host "DONE: $($updates.Count) mise(s) a jour installee(s)"
-    } else {
-        Write-Host "DONE: Systeme deja a jour"
+
+    # Enregistrer le service Microsoft Update : apporte les correctifs Office et
+    # les pilotes, absents du service Windows Update seul.
+    try {
+        $sm = New-Object -ComObject Microsoft.Update.ServiceManager
+        $sm.AddService2('7971f918-a847-4430-9279-4a52d1efe18d', 7, '') | Out-Null
+        Write-Host "INFO: Service Microsoft Update enregistre (Office + pilotes)"
+    } catch {
+        Write-Host "INFO: Microsoft Update non enregistre - $($_.Exception.Message)"
+    }
+
+    # Boucle multi-passes : Windows Update revele souvent de nouvelles MAJ une
+    # fois les precedentes posees. On s'arrete des qu'il n'y a plus rien, qu'un
+    # redemarrage est requis, ou au bout de 3 passes.
+    $total = 0
+    for ($pass = 1; $pass -le 3; $pass++) {
+        # UNE seule commande recherche ET installe (-Install) : l'ancien code
+        # enchainait Get-WindowsUpdate puis Install-WindowsUpdate, soit deux
+        # balayages complets de Windows Update.
+        $res = @(Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -Install -IgnoreReboot -EA Stop)
+        if ($res.Count -eq 0) {
+            if ($pass -eq 1) { Write-Host "DONE: Systeme deja a jour" }
+            else { Write-Host "DONE: $total mise(s) a jour installee(s)" }
+            break
+        }
+        $res | ForEach-Object { Write-Host "UPDATE: $($_.Title)" }
+        $total += $res.Count
+        Write-Host "INFO: Passe $pass - $($res.Count) mise(s) a jour posee(s)"
+        $needReboot = $false
+        try { $needReboot = [bool](Get-WURebootStatus -Silent) } catch { }
+        if ($needReboot) {
+            Write-Host "REBOOT: $total mise(s) a jour installee(s)"
+            break
+        }
+        if ($pass -eq 3) { Write-Host "DONE: $total mise(s) a jour installee(s)" }
     }
 } catch {
     Write-Host "PSWU_FAIL: $($_.Exception.Message)"
+} finally {
+    if ($prevPolicy -and $prevPolicy -ne 'Trusted') {
+        Set-PSRepository -Name PSGallery -InstallationPolicy $prevPolicy -EA SilentlyContinue
+    }
 }
 """
         # Lancer un heartbeat dans un thread secondaire : indique à l'opérateur
@@ -69023,6 +69059,13 @@ try {
             line = line.strip()
             if line.startswith("UPDATE:"):
                 self.log(f"Mise à jour : {line[7:].strip()}", "INFO")
+            elif line.startswith("INFO:"):
+                self.log(line[5:].strip(), "INFO")
+            elif line.startswith("REBOOT:"):
+                # Le cycle s'est arrêté sur un redémarrage requis : le signaler au
+                # bilan final, qui annonçait sinon « aucun redémarrage nécessaire ».
+                self._reboot_pending_seen = True
+                self.log(f"{line[7:].strip()} — redémarrage requis pour continuer.", "WARN")
             elif line.startswith("DONE:"):
                 self.log(line[5:].strip(), "OK")
             elif line.startswith("PSWU_FAIL:"):
@@ -69045,20 +69088,50 @@ try {
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 try {
-    $session  = New-Object -ComObject Microsoft.Update.Session
-    $searcher = $session.CreateUpdateSearcher()
-    $result   = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-    if ($result.Updates.Count -gt 0) {
-        $result.Updates | ForEach-Object { Write-Host "UPDATE: $($_.Title)" }
+    $session = New-Object -ComObject Microsoft.Update.Session
+
+    # Enregistrer Microsoft Update (Office + pilotes) et cibler ce service.
+    $svcId = '7971f918-a847-4430-9279-4a52d1efe18d'
+    $useMU = $false
+    try {
+        $sm = New-Object -ComObject Microsoft.Update.ServiceManager
+        $sm.AddService2($svcId, 7, '') | Out-Null
+        $useMU = $true
+        Write-Host "INFO: Service Microsoft Update enregistre (Office + pilotes)"
+    } catch {
+        Write-Host "INFO: Microsoft Update non enregistre - $($_.Exception.Message)"
+    }
+
+    $total = 0
+    for ($pass = 1; $pass -le 3; $pass++) {
+        $searcher = $session.CreateUpdateSearcher()
+        if ($useMU) { $searcher.ServiceID = $svcId; $searcher.ServerSelection = 3 }
+        # Plus de filtre Type='Software' : il excluait TOUS les pilotes proposes
+        # par Windows Update.
+        $result = $searcher.Search("IsInstalled=0 and IsHidden=0")
+        if ($result.Updates.Count -eq 0) {
+            if ($pass -eq 1) { Write-Host "DONE: Systeme deja a jour (WUA)" }
+            else { Write-Host "DONE: $total mise(s) a jour installee(s) (WUA)" }
+            break
+        }
+        foreach ($u in $result.Updates) {
+            Write-Host "UPDATE: $($u.Title)"
+            # Accepter le CLUF : sans cela toute MAJ qui en exige un echoue
+            # silencieusement (l'ancien code ne le faisait jamais).
+            if (-not $u.EulaAccepted) { try { $u.AcceptEula() } catch { } }
+        }
         $dl = $session.CreateUpdateDownloader()
         $dl.Updates = $result.Updates
         $dl.Download() | Out-Null
         $inst = $session.CreateUpdateInstaller()
         $inst.Updates = $result.Updates
         $r = $inst.Install()
-        Write-Host "DONE: $($result.Updates.Count) mise(s) a jour installee(s) (code=$($r.ResultCode))"
-    } else {
-        Write-Host "DONE: Systeme deja a jour (WUA)"
+        $total += $result.Updates.Count
+        # OperationResultCode : 2=Succeeded 3=SucceededWithErrors 4=Failed 5=Aborted
+        Write-Host "RESULT: pass=$pass code=$($r.ResultCode) reboot=$($r.RebootRequired) count=$($result.Updates.Count)"
+        if ($r.ResultCode -eq 4 -or $r.ResultCode -eq 5) { break }
+        if ($r.RebootRequired) { break }
+        if ($pass -eq 3) { Write-Host "DONE: $total mise(s) a jour installee(s) (WUA)" }
     }
 } catch {
     Write-Host "FAIL: $($_.Exception.Message)"
@@ -69080,17 +69153,45 @@ try {
 
             _wua_stop.set()
 
+            # OperationResultCode de l'API Windows Update. L'ancien code lisait
+            # 4 comme « SucceededWithErrors / redémarrage requis » : en réalité
+            # 4 = Échec et 5 = Abandonné, donc des échecs étaient journalisés en
+            # simple WARN de redémarrage, et 3 passait pour un succès complet.
+            WUA_RESULT = {
+                0: ("WARN", "non démarré"),
+                1: ("WARN", "encore en cours"),
+                2: ("OK",   "réussi"),
+                3: ("WARN", "réussi avec erreurs"),
+                4: ("FAIL", "échec"),
+                5: ("FAIL", "abandonné"),
+            }
             for line in out2.splitlines():
                 line = line.strip()
                 if line.startswith("UPDATE:"):
                     self.log(f"Mise à jour : {line[7:].strip()}", "INFO")
-                elif line.startswith("DONE:"):
-                    msg = line[5:].strip()
-                    # ResultCode=4 = SucceededWithErrors / redémarrage requis
-                    if "code=4" in msg.lower() or "code=5" in msg.lower():
-                        self.log(f"{msg} — redémarrage requis.", "WARN")
+                elif line.startswith("INFO:"):
+                    self.log(line[5:].strip(), "INFO")
+                elif line.startswith("RESULT:"):
+                    m = re.search(r"pass=(\d+)\s+code=(\d+)\s+reboot=(\w+)\s+count=(\d+)", line)
+                    if m:
+                        p, rc, rb, cnt = (int(m.group(1)), int(m.group(2)),
+                                          m.group(3).lower() == "true", int(m.group(4)))
+                        lvl, label = WUA_RESULT.get(rc, ("WARN", f"code {rc}"))
+                        self.log(
+                            f"Passe {p} — {cnt} mise(s) à jour : {label}.", lvl
+                        )
+                        if lvl != "OK":
+                            self.log(
+                                "Vérifier l'historique dans Paramètres > Windows Update.",
+                                "WARN"
+                            )
+                        if rb:
+                            self._reboot_pending_seen = True
+                            self.log("Windows Update : redémarrage requis.", "WARN")
                     else:
-                        self.log(msg, "OK")
+                        self.log(line, "INFO")
+                elif line.startswith("DONE:"):
+                    self.log(line[5:].strip(), "OK")
                 elif line.startswith("FAIL:"):
                     msg = line[5:].strip().lower()
                     if any(k in msg for k in ("reboot", "restart", "pending")):
