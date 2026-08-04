@@ -67662,6 +67662,13 @@ try {
     # n'est pas signé Microsoft, il est rejeté.
     ODT_CDN_URL = "https://officecdn.microsoft.com/pr/wsus/setup.exe"
 
+    # Microsoft Store — Lenovo COMMERCIAL Vantage (repli si le paquet de
+    # déploiement Lenovo est absent du poste).
+    # NE PAS confondre avec 9WZDNCRFJ4MV, la version GRAND PUBLIC : celle-ci
+    # embarque la surveillance dark web et des fonctions promotionnelles, qui
+    # n'ont rien à faire sur un poste d'entreprise.
+    VANTAGE_STORE_ID = "9NR5B8GVVM13"
+
     def _download_odt_setup(self) -> Path | None:
         """Télécharge setup.exe (ODT) depuis le CDN Microsoft. None si échec.
 
@@ -67755,6 +67762,33 @@ try {
         -1978334973,   # 0x8A150103 INSTALL_FILE_IN_USE — fichier verrouillé
         -1978335215,   # 0x8A150011 INSTALLER_HASH_MISMATCH — hash de manifeste périmé
     )
+
+    def _msstore_install(self, store_id: str, name: str) -> bool:
+        """Installe un paquet depuis le Microsoft Store (source msstore).
+
+        Utilisé en dernier recours seulement : la source msstore échoue avec
+        0x8A15005E (certificate pinning) derrière un proxy à inspection SSL, et
+        les paquets Store sont des MSIX — donc refusés sur les images où le
+        déploiement AppX est restreint.
+        """
+        if not self._winget_ok:
+            return False
+        self.log(f"{name} — tentative via le Microsoft Store ({store_id})...", "CMD")
+        code, out = run_cmd([
+            "winget", "install", "--id", store_id,
+            "--exact",
+            "--source", "msstore",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--scope", "machine",
+        ], timeout=900)
+        if code in (0, 3010, 1641):
+            return True
+        self.log_winget(f"{name} (Store)", code)
+        for line in (out or "").strip().splitlines()[:4]:
+            if line.strip():
+                self.log(f"  msstore: {line.strip()}", "CMD")
+        return False
 
     def _winget_install(self, pkg_id: str, name: str,
                         scope: str | None = "machine") -> bool:
@@ -68645,6 +68679,26 @@ try {
                     "accessible, puis relancez.", "WARN"
                 )
                 return
+            # Repli Microsoft Store. ATTENTION : 9NR5B8GVVM13 est bien la version
+            # COMMERCIALE (9WZDNCRFJ4MV est la version grand public, à proscrire
+            # sur un poste corpo). Ce repli n'installe toutefois QUE l'application :
+            # le paquet de déploiement, lui, pose aussi le System Update Helper
+            # (VantageInstaller Install -Vantage -SuHelper). Il reste donc la
+            # méthode de référence.
+            if self._msstore_install(self.VANTAGE_STORE_ID, "Commercial Vantage"):
+                _, out_s = run_cmd(
+                    ["powershell", "-NoProfile", "-Command", _check], timeout=30
+                )
+                if "YES" in (out_s or "").upper():
+                    self.log(
+                        "Commercial Vantage installé depuis le Microsoft Store. "
+                        "Note : le System Update Helper n'est PAS inclus — "
+                        "déployez le paquet Lenovo pour une installation complète.",
+                        "WARN"
+                    )
+                    return
+                self.log("Commercial Vantage — Store : app non détectée après installation.", "WARN")
+
             # Créer le dossier attendu : plus clair pour l'opérateur qu'un chemin
             # mentionné dans un message mais inexistant sur le disque.
             target = LGS_DEPLOY_DIR / "CommercialVantage"

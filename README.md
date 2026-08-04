@@ -117,7 +117,11 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 | Box for Office / Box Tools | winget | message d'installation manuelle |
 | Adobe Acrobat Reader | winget | API Adobe (endpoint non documenté) |
 | Pilote NVIDIA / NVIDIA App | CDN NVIDIA (lookup de version) | URL de repli figée |
-| Lenovo Commercial Vantage | `VantageInstaller.exe` du paquet de déploiement | — |
+| Lenovo Commercial Vantage | `VantageInstaller.exe` du paquet de déploiement (App + SU Helper) | Microsoft Store `9NR5B8GVVM13` — **application seule**, sans System Update Helper |
+
+> **Commercial Vantage et le Microsoft Store** — le paquet de déploiement Lenovo reste la méthode de référence : il installe l'application **et** le System Update Helper (`VantageInstaller Install -Vantage -SuHelper`). Le repli Store (`9NR5B8GVVM13`) n'installe que l'application ; il évite de ne rien installer du tout quand le paquet est absent du poste, mais l'installation reste incomplète et le journal le signale. Attention à ne pas confondre avec `9WZDNCRFJ4MV`, la version **grand public** de Vantage, qui embarque des fonctions promotionnelles et de surveillance dark web sans place sur un poste d'entreprise.
+>
+> **Slack et le Microsoft Store** — inutile d'y recourir : la source `winget` publie déjà les deux variantes du paquet (MSIX en portée machine, `SlackSetup.exe` en portée utilisateur). Le Store ne proposerait que le MSIX, précisément ce que refusent les images où le déploiement AppX est restreint.
 
 > **Slack et la portée d'installation** — en portée machine, winget sert le paquet **MSIX** de Slack, provisionné pour tous les profils : c'est le comportement attendu en provisionnement, et la raison pour laquelle `--scope machine` est conservé. En portée utilisateur, Slack n'atterrirait que dans le profil du technicien. Conséquence importante pour la détection : un Slack installé en MSIX réside dans `C:\Program Files\WindowsApps` et n'expose **aucun** des chemins classiques — d'où la détection par registre et par nom de paquet Appx (`appx_name`).
 7. **Favoris Microsoft Edge** — écriture des favoris dans les profils + activation de la barre des favoris.
