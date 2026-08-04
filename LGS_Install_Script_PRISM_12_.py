@@ -68890,6 +68890,52 @@ try {
         else:
             self.log("Écran de veille : Ribbons.scr, 10 min, verrouillage activé.", "OK")
 
+        # Appliquer à la session OUVERTE (voir _apply_screensaver_now).
+        self._apply_screensaver_now(int(values["ScreenSaveTimeOut"]))
+
+    def _apply_screensaver_now(self, timeout_s: int = 600):
+        """Applique l'écran de veille à la session en cours, sans attendre une
+        réouverture de session.
+
+        Écrire dans « Control Panel\\Desktop » ne suffit pas : Windows conserve
+        les paramètres d'écran de veille en cache pour la session ouverte et ne
+        relit le registre qu'à l'ouverture suivante. Sans cet appel, le réglage
+        semblait ne « prendre » qu'après un redémarrage — l'écran de veille ne se
+        déclenchait jamais pendant la session de provisionnement.
+
+        SystemParametersInfoW avec SPIF_SENDCHANGE diffuse le changement aux
+        fenêtres de la session, qui rechargent immédiatement le paramètre.
+        Purement cosmétique pour la suite du script : un échec ici n'a aucun
+        impact, le registre restant la source de vérité pour les sessions futures.
+        """
+        SPI_SETSCREENSAVETIMEOUT = 0x000F
+        SPI_SETSCREENSAVEACTIVE  = 0x0011
+        SPIF_UPDATEINIFILE       = 0x01
+        SPIF_SENDCHANGE          = 0x02
+        flags = SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+        try:
+            spi = ctypes.windll.user32.SystemParametersInfoW
+            spi.restype = ctypes.c_bool
+            spi.argtypes = [ctypes.c_uint, ctypes.c_uint,
+                            ctypes.c_void_p, ctypes.c_uint]
+            ok_timeout = spi(SPI_SETSCREENSAVETIMEOUT, timeout_s, None, flags)
+            ok_active  = spi(SPI_SETSCREENSAVEACTIVE, 1, None, flags)
+            if ok_timeout and ok_active:
+                self.log(
+                    f"Écran de veille actif immédiatement "
+                    f"({timeout_s // 60} min) — sans redémarrage.", "OK"
+                )
+            else:
+                self.log(
+                    "Écran de veille — session en cours non notifiée ; le réglage "
+                    "s'appliquera à la prochaine ouverture de session.", "WARN"
+                )
+        except Exception as exc:
+            self.log(
+                f"Écran de veille — notification de session impossible ({exc}) ; "
+                "le réglage s'appliquera à la prochaine ouverture de session.", "WARN"
+            )
+
     def step8_windows_config(self):
         self.step(8, "active", "Configuration en cours...")
         self.log("CONFIGURATION WINDOWS", "SECTION")
