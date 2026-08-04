@@ -67761,14 +67761,17 @@ try {
         """Installe un paquet winget. Retourne True si l'installation est réussie.
 
         scope : portée demandée à winget (« machine » par défaut). Passer None pour
-        les paquets publiés UNIQUEMENT en portée utilisateur — Slack notamment, qui
-        s'installe dans %LOCALAPPDATA%. Leur imposer --scope machine fait échouer
-        winget avec -1978335216 (« aucun installeur applicable »), un code qui n'est
-        ni un succès ni transitoire : la boucle sortait donc dès le 1er essai et les
-        3 tentatives ne servaient à rien.
+        les paquets qu'on veut explicitement en portée utilisateur.
 
-        Par sécurité, si winget répond malgré tout -1978335216 alors qu'une portée
-        était imposée, on réessaie une fois SANS --scope plutôt que d'abandonner.
+        Deux codes déclenchent un réessai SANS --scope plutôt qu'un abandon, car
+        l'un comme l'autre signifie « pas d'installeur exploitable POUR CETTE
+        PORTÉE », alors qu'une autre portée conviendrait :
+
+        - -1978335216 (0x8A150010) « aucun installeur applicable » ;
+        - -1978334957 (0x8A150113) « paquet non supporté par ce système » — cas
+          réel de Slack : en portée machine winget sert un MSIX, refusé par les
+          images où le déploiement AppX est restreint, alors qu'un SlackSetup.exe
+          parfaitement installable est proposé pour l'autre portée.
         """
         if not self._winget_ok:
             self.log(f"{name} — winget indisponible, installation ignorée.", "WARN")
@@ -67776,6 +67779,8 @@ try {
         SUCCESS_CODES = (0, 3010, 1641, -1978335212, -1978335189, -1978335140)
         HASH_MISMATCH = -1978335215   # 0x8A150011 — hash de manifeste périmé
         NO_APPLICABLE = -1978335216   # 0x8A150010 — aucun installeur pour cette portée
+        NOT_SUPPORTED = -1978334957   # 0x8A150113 — paquet non supporté par ce système
+        SCOPE_RETRY   = (NO_APPLICABLE, NOT_SUPPORTED)
         base_cmd = [
             "winget", "install", "--id", pkg_id,
             "--exact",
@@ -67786,7 +67791,7 @@ try {
         ]
 
         code, out = 1, ""
-        drop_scope = False               # passe à True après un -1978335216
+        drop_scope = False               # passe à True après un code SCOPE_RETRY
         for attempt in range(1, 4):          # 3 tentatives maximum
             if attempt == 1:
                 self.log(f"{name} — winget install {pkg_id}", "CMD")
@@ -67800,11 +67805,13 @@ try {
             code, out = run_cmd(cmd, timeout=600)
             if code in SUCCESS_CODES:
                 break
-            if code == NO_APPLICABLE and scope and not drop_scope:
+            if code in SCOPE_RETRY and scope and not drop_scope:
                 drop_scope = True
+                motif = ("aucun installeur en portée" if code == NO_APPLICABLE
+                         else "paquet non supporté par ce système en portée")
                 self.log(
-                    f"{name} — aucun installeur en portée « {scope} » ; "
-                    "nouvel essai sans --scope.", "WARN"
+                    f"{name} — {motif} « {scope} » ; nouvel essai sans --scope "
+                    "(winget choisira l'installeur adapté).", "WARN"
                 )
                 continue                     # pas d'attente : ce n'est pas un verrou
             if code not in self.WINGET_TRANSIENT:
@@ -68010,13 +68017,31 @@ try {
         if self._soft_present(sl):
             self.log("Slack déjà installé.", "SKIP")
         else:
-            # Portée machine : winget sert alors le paquet MSIX de Slack, qui est
+            # Portée machine : winget sert alors le paquet MSIX de Slack,
             # provisionné pour TOUS les profils — le bon comportement en
             # provisionnement. (Vérifié : `winget show SlackTechnologies.Slack
-            # --scope machine` renvoie bien un installeur de type msix.)
+            # --scope machine` renvoie bien un installeur de type msix, et
+            # `--scope user` un SlackSetup.exe.)
+            #
+            # Sur les images où le déploiement AppX est restreint, ce MSIX est
+            # refusé avec -1978334957 (0x8A150113, « paquet non supporté par ce
+            # système »). _winget_install rebascule alors automatiquement sans
+            # --scope, ce qui donne le SlackSetup.exe : Slack est bien installé,
+            # mais pour le SEUL profil courant — d'où l'avertissement ci-dessous.
             ok = self._winget_install(sl["winget_id"], "Slack")
             if self._soft_present(sl):
-                self.log("Slack installé avec succès.", "OK")
+                # Distinguer MSIX (tous profils) et .exe (profil courant seul) :
+                # dans le 2e cas l'utilisateur final devra installer Slack lui-même.
+                msix = any(Path(p).exists() for p in sl["paths"])
+                if msix:
+                    self.log(
+                        "Slack installé, mais via l'installeur .exe : présent "
+                        "UNIQUEMENT pour la session courante. L'utilisateur final "
+                        "devra l'installer à sa première ouverture de session.",
+                        "WARN"
+                    )
+                else:
+                    self.log("Slack installé (MSIX, tous les profils).", "OK")
             elif ok:
                 self.log(
                     "Slack — winget signale un succès mais Slack reste "
@@ -68604,10 +68629,33 @@ try {
                   Path(r"C:\Deploy\CommercialVantage\VantageInstaller.exe")]
         installer = next((c for c in cands if c.exists()), None)
         if installer is None:
+            # Erreur classique : le ZIP Lenovo est déposé sans être extrait.
+            # Le signaler explicitement plutôt que « fichier introuvable ».
+            zips = []
+            for d in (LGS_DEPLOY_DIR / "CommercialVantage", LGS_DEPLOY_DIR):
+                try:
+                    if d.is_dir():
+                        zips += [z for z in d.glob("*.zip")]
+                except Exception:
+                    pass
+            if zips:
+                self.log(
+                    f"Archive Lenovo trouvée mais NON EXTRAITE : {zips[0].name}. "
+                    "Extrayez-la sur place pour que VantageInstaller.exe soit "
+                    "accessible, puis relancez.", "WARN"
+                )
+                return
+            # Créer le dossier attendu : plus clair pour l'opérateur qu'un chemin
+            # mentionné dans un message mais inexistant sur le disque.
+            target = LGS_DEPLOY_DIR / "CommercialVantage"
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
             self.log(
                 "VantageInstaller.exe introuvable. Déposez le paquet de "
                 "déploiement Lenovo Commercial Vantage (EXTRAIT) dans "
-                "C:\\LGS_Deploy\\CommercialVantage\\, puis relancez. "
+                f"{target}\\, puis relancez. "
                 "Paquet : https://docs.lenovocdrt.com/guides/lcv/", "WARN"
             )
             return
