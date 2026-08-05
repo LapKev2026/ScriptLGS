@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8-sig -*-
 """
-LGS Install Script v3.8 — P.R.I.S.M
-PowerShell Remote Initialization & System Management
+LGS InstalleX v3.8
+Provisionnement automatise des postes de travail LGS
 Conversion Python 3 / PyQt6
 © Copyright Groupe LGS — une Société IBM
 """
 
-PRISM_VERSION = "3.8.1"   # ← incrémenter ici uniquement lors des releases
+INSTALLEX_VERSION = "3.8.1"   # ← incrémenter ici uniquement lors des releases
 
 
 # DOIT être avant tout autre import : les union types (X | Y), list[str],
@@ -18,7 +18,7 @@ import sys
 if sys.version_info < (3, 10):
     _ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     _msg = (
-        f"PRISM requiert Python 3.10 ou plus récent.\n"
+        f"LGS InstalleX requiert Python 3.10 ou plus récent.\n"
         f"Version détectée : {_ver}\n\n"
         f"Téléchargez Python 3.10+ sur https://www.python.org/downloads/"
     )
@@ -26,7 +26,7 @@ if sys.version_info < (3, 10):
     try:
         import ctypes
         ctypes.windll.user32.MessageBoxW(
-            0, _msg, "PRISM — Version Python incompatible", 0x10  # MB_ICONERROR
+            0, _msg, "LGS InstalleX — Version Python incompatible", 0x10  # MB_ICONERROR
         )
     except Exception:
         print(_msg, file=sys.stderr)
@@ -135,7 +135,7 @@ except ImportError:
         try:
             ctypes.windll.user32.MessageBoxW(
                 0, "PyQt6 est requis. Installez-le : python -m pip install PyQt6",
-                "PRISM — PyQt6 manquant", 0x10  # MB_ICONERROR
+                "LGS InstalleX — PyQt6 manquant", 0x10  # MB_ICONERROR
             )
         except Exception:
             print("PyQt6 requis : python -m pip install PyQt6", file=sys.stderr)
@@ -66778,13 +66778,13 @@ def relaunch_as_admin():
                 0,
                 f"Échec de l'élévation administrateur (code {rc}).\n\n"
                 f"Interpréteur : {sys.executable}\nScript : {script}",
-                "PRISM — relance admin",
+                "LGS InstalleX — relance admin",
                 0x10,  # MB_ICONERROR
             )
     except Exception as e:
         try:
             ctypes.windll.user32.MessageBoxW(
-                0, str(e), "PRISM — relance admin", 0x10
+                0, str(e), "LGS InstalleX — relance admin", 0x10
             )
         except Exception:
             pass
@@ -67105,7 +67105,7 @@ class InstallWorker(QThread):
             f"Utilisateur      : {os.environ.get('USERNAME', 'Inconnu')}\n"
             f"Windows          : {version} (Build {build})\n"
             f"Python           : {sys.version.split()[0]}\n"
-            f"PRISM            : v{PRISM_VERSION}\n\n"
+            f"LGS InstalleX            : v{INSTALLEX_VERSION}\n\n"
             "Légende : ✅ OK | ❌ FAIL | ⚠️ WARN | ⏭️ SKIP | ℹ️ INFO | ↳ CMD\n"
             "══════════════════════════════════════════════════════════════════\n\n"
         )
@@ -67182,7 +67182,7 @@ class InstallWorker(QThread):
         """
         self._pause_event.clear()
         self.sig_pause.emit(titre, message)
-        self._pause_event.wait()  # débloqué par PRISMWindow via resume()
+        self._pause_event.wait()  # débloqué par InstalleXWindow via resume()
 
     def resume(self):
         """Appelé par le slot GUI quand l'utilisateur clique OK sur la pause."""
@@ -67386,14 +67386,14 @@ class InstallWorker(QThread):
             # Solution : écrire directement dans le registre + WMI SetComputerName,
             # sans aucun signal de redémarrage. Le changement est effectif après reboot.
             #
-            # SEC-1 : le nom est passé via une VARIABLE D'ENVIRONNEMENT ($env:PRISM_NEW_NAME),
+            # SEC-1 : le nom est passé via une VARIABLE D'ENVIRONNEMENT ($env:INSTALLEX_NEW_NAME),
             # jamais interpolé dans le corps du script → aucun risque d'injection PowerShell.
             # (L'ancienne approche `-Command <script> -ArgumentList <nom>` était inopérante :
             #  powershell.exe n'a pas de paramètre -ArgumentList, et le préfixe UTF-8 injecté
             #  cassait le param() — le nom n'était jamais lié, donc le renommage échouait.)
             ps_rename = r"""
 try {
-    $name = $env:PRISM_NEW_NAME
+    $name = $env:INSTALLEX_NEW_NAME
 
     # 1) Registre — clés lues par Windows au prochain démarrage
     $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName'
@@ -67415,7 +67415,7 @@ try {
             code, out = run_cmd(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
                  "-Command", ps_rename],
-                timeout=30, env_extra={"PRISM_NEW_NAME": new_name}
+                timeout=30, env_extra={"INSTALLEX_NEW_NAME": new_name}
             )
             out_clean = out.strip()
             if "OK" in out_clean and "FAIL" not in out_clean:
@@ -67674,7 +67674,7 @@ try {
 
         Évite d'avoir à déposer manuellement setup.exe dans C:\\LGS_Deploy\\ODT.
         """
-        dest = Path(tempfile.gettempdir()) / "PRISM_ODT" / "setup.exe"
+        dest = Path(tempfile.gettempdir()) / "INSTALLEX_ODT" / "setup.exe"
         self.log("ODT — téléchargement de setup.exe depuis le CDN Microsoft...", "CMD")
         ok, msg = download_file(self.ODT_CDN_URL, dest, timeout=300)
         if not ok:
@@ -67709,7 +67709,7 @@ try {
         self.log(f"ODT trouvé : {setup}", "OK")
 
         # 2. Écrire configuration.xml dans un dossier de travail temporaire.
-        work = Path(os.environ.get("TEMP", r"C:\Windows\Temp")) / "PRISM_ODT"
+        work = Path(os.environ.get("TEMP", r"C:\Windows\Temp")) / "INSTALLEX_ODT"
         try:
             work.mkdir(parents=True, exist_ok=True)
             cfg = work / "configuration.xml"
@@ -68954,17 +68954,17 @@ try {
         default_dat = Path(sysdrive + r"\Users\Default\NTUSER.DAT")
         if default_dat.exists():
             code, _ = run_cmd(
-                ["reg", "load", r"HKU\PRISM_DEFAULT", str(default_dat)], timeout=30
+                ["reg", "load", r"HKU\INSTALLEX_DEFAULT", str(default_dat)], timeout=30
             )
             if code == 0:
                 try:
-                    if _write("PRISM_DEFAULT"):
+                    if _write("INSTALLEX_DEFAULT"):
                         applied += 1
                         self.log("Écran de veille appliqué au profil par défaut.", "OK")
                 except Exception as exc:
                     self.log(f"Écran de veille (profil défaut) : {exc}", "WARN")
                 finally:
-                    run_cmd(["reg", "unload", r"HKU\PRISM_DEFAULT"], timeout=30)
+                    run_cmd(["reg", "unload", r"HKU\INSTALLEX_DEFAULT"], timeout=30)
             else:
                 self.log("Écran de veille — profil par défaut non chargeable.", "WARN")
 
@@ -69906,7 +69906,7 @@ class SetupDialog(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("P.R.I.S.M — Configuration initiale")
+        self.setWindowTitle("LGS InstalleX — Configuration initiale")
         self.setFixedSize(480, 260)
         self._build_ui()
         self._apply_style()
@@ -69916,7 +69916,7 @@ class SetupDialog(QWidget):
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel(f"P.R.I.S.M v{PRISM_VERSION} — Informations de provisioning")
+        title = QLabel(f"LGS InstalleX v{INSTALLEX_VERSION} — Informations de provisioning")
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
@@ -69992,7 +69992,7 @@ class SetupDialog(QWidget):
             "nouvelle_embauche": self.chk_nouvelle_embauche.isChecked(),
         }
         self.accepted.emit(info)
-        self.hide()  # hide() au lieu de close() — évite lastWindowClosed avant que PRISMWindow soit visible
+        self.hide()  # hide() au lieu de close() — évite lastWindowClosed avant que InstalleXWindow soit visible
 
     def closeEvent(self, event):
         """Fermeture manuelle du SetupDialog (croix) sans avoir cliqué Démarrer → quitter."""
@@ -70061,7 +70061,7 @@ class StepPanel(QFrame):
 # FENÊTRE PRINCIPALE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class PRISMWindow(QMainWindow):
+class InstalleXWindow(QMainWindow):
     def __init__(self, machine_info: dict, build: str, version: str):
         super().__init__()
         self.machine_info = machine_info
@@ -70069,7 +70069,7 @@ class PRISMWindow(QMainWindow):
         self.win_version  = version
         self.step_panels: list[StepPanel] = []
 
-        self.setWindowTitle("P.R.I.S.M — PowerShell Remote Initialization & System Management")
+        self.setWindowTitle("LGS InstalleX — Provisionnement automatise des postes de travail")
         self.setFixedSize(860, 696)
 
         # Empêcher Qt de détruire la fenêtre automatiquement sur un signal
@@ -70131,12 +70131,12 @@ class PRISMWindow(QMainWindow):
         # Titres
         txt = QVBoxLayout()
         txt.setSpacing(2)
-        lbl_title = QLabel("Script d'automatisation de configuration (P.R.I.S.M)")
+        lbl_title = QLabel("Script d'automatisation de configuration (LGS InstalleX)")
         lbl_title.setFont(QFont("Segoe UI", 12))
         lbl_title.setStyleSheet(f"color:{CLR_TEXT_MAIN};")
         txt.addWidget(lbl_title)
 
-        lbl_sub = QLabel(f"© Copyright Groupe LGS — une Société IBM   | v{PRISM_VERSION}")
+        lbl_sub = QLabel(f"© Copyright Groupe LGS — une Société IBM   | v{INSTALLEX_VERSION}")
         lbl_sub.setFont(QFont("Segoe UI", 8))
         lbl_sub.setStyleSheet(f"color:{CLR_TEXT_MUTED};")
         txt.addWidget(lbl_sub)
@@ -70250,7 +70250,7 @@ class PRISMWindow(QMainWindow):
         lay.setSpacing(10)
 
         self.lbl_footer = QLabel(
-            "© Copyright Kevin Laplante pour Groupe LGS  |  P.R.I.S.M v" + PRISM_VERSION
+            "© Copyright Kevin Laplante pour Groupe LGS  |  LGS InstalleX v" + INSTALLEX_VERSION
         )
         self.lbl_footer.setFont(QFont("Segoe UI", 7))
         self.lbl_footer.setStyleSheet(f"color:{CLR_TEXT_MUTED};")
@@ -70409,7 +70409,7 @@ class PRISMWindow(QMainWindow):
 def main():
     import traceback
 
-    _crash_log = Path(tempfile.gettempdir()) / "PRISM_crash.log"
+    _crash_log = Path(tempfile.gettempdir()) / "InstalleX_crash.log"
 
     def _write_crash(text: str):
         try:
@@ -70456,8 +70456,8 @@ def main():
     def on_accepted(info: dict):
         nonlocal machine_info
         machine_info = info
-        win = PRISMWindow(info, build, version)
-        app._prism_win = win  # empêche le garbage collector de détruire la fenêtre
+        win = InstalleXWindow(info, build, version)
+        app._installex_win = win  # empêche le garbage collector de détruire la fenêtre
         win.show()
 
     setup.accepted.connect(on_accepted)
@@ -70469,7 +70469,7 @@ def main():
 
 if __name__ == "__main__":
     import traceback
-    _crash_log = Path(tempfile.gettempdir()) / "PRISM_crash.log"
+    _crash_log = Path(tempfile.gettempdir()) / "InstalleX_crash.log"
     try:
         main()
     except Exception:

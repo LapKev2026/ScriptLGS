@@ -1,4 +1,4 @@
-# LGS Install Script v3.4 — P.R.I.S.M
+﻿# LGS Install Script v3.4 — LGS InstalleX
 
 > **PowerShell Remote Initialization & System Management**
 
@@ -68,13 +68,13 @@ Python 3.11.x
 Depuis le dossier contenant le script :
 
 ```powershell
-python LGS_Install_Script_PRISM_8_.py
+python LGS_Install_Script_LGS InstalleX_8_.py
 ```
 
 ou
 
 ```powershell
-py LGS_Install_Script_PRISM_8_.py
+py LGS_Install_Script_LGS InstalleX_8_.py
 ```
 
 ---
@@ -108,7 +108,7 @@ Au lancement :
 # Structure du projet
 
 ```text
-LGS_Install_Script_PRISM_8_.py
+LGS_Install_Script_LGS InstalleX_8_.py
 README.md
 ```
 
@@ -131,7 +131,7 @@ pyinstaller ^
     --onefile ^
     --windowed ^
     --uac-admin ^
-    LGS_Install_Script_PRISM_8_.py
+    LGS_Install_Script_LGS InstalleX_8_.py
 ```
 
 Le fichier compilé sera créé dans :
@@ -167,7 +167,7 @@ python n'est pas reconnu...
 Utiliser :
 
 ```powershell
-py LGS_Install_Script_PRISM_8_.py
+py LGS_Install_Script_LGS InstalleX_8_.py
 ```
 
 ou ajouter Python au PATH.
@@ -185,7 +185,7 @@ Vérifier que :
 
 # Auteur
 
-**LGS Install Script v3.4 — P.R.I.S.M**
+**LGS Install Script v3.4 — LGS InstalleX**
 
 PowerShell Remote Initialization & System Management
 

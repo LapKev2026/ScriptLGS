@@ -1,10 +1,10 @@
-# P.R.I.S.M
+﻿# LGS InstalleX
 
-**PowerShell Remote Initialization & System Management**
+**Provisionnement automatisé des postes de travail LGS**
 
 Outil de provisionnement automatisé des postes de travail pour les déploiements Groupe LGS — une société IBM.
 
-> Version applicative : **3.8.1** — Itération livrée : **PRISM 12** (Python / PyQt6)
+> Version applicative : **3.8.1** — Itération livrée : **LGS InstalleX** (Python / PyQt6)
 > Version parallèle maintenue : **PowerShell / WinForms** (lignée v3.x)
 > © Copyright Groupe LGS — une société IBM
 
@@ -25,14 +25,14 @@ Outil de provisionnement automatisé des postes de travail pour les déploiement
 
 ## Aperçu
 
-P.R.I.S.M automatise la préparation complète d'un poste de travail Windows dans le cadre des déploiements LGS, depuis un poste fraîchement imagé jusqu'à un poste prêt à remettre à l'utilisateur. L'outil regroupe en une seule interface les étapes habituellement manuelles et sujettes à erreur : renommage machine, configuration régionale, jonction Entra ID, installation des applications standard, chiffrement BitLocker avec sauvegarde de la clé, et vérifications post-installation.
+LGS InstalleX automatise la préparation complète d'un poste de travail Windows dans le cadre des déploiements LGS, depuis un poste fraîchement imagé jusqu'à un poste prêt à remettre à l'utilisateur. L'outil regroupe en une seule interface les étapes habituellement manuelles et sujettes à erreur : renommage machine, configuration régionale, jonction Entra ID, installation des applications standard, chiffrement BitLocker avec sauvegarde de la clé, et vérifications post-installation.
 
 Deux implémentations fonctionnellement équivalentes sont maintenues en parallèle :
 
 | Implémentation | Interface | Fichier | Usage |
 |---|---|---|---|
-| Python 3.10+ / PyQt6 | GUI thème sombre | `LGS_Install_Script_PRISM_12_.py` | Itération courante |
-| PowerShell / WinForms | GUI thème sombre | `LGS_Install_Script 3.4 (P.R.I.S.M).ps1` | Version historique / environnements sans Python |
+| Python 3.10+ / PyQt6 | GUI thème sombre | `LGS_InstalleX.py` | Itération courante |
+| PowerShell / WinForms | GUI thème sombre | `LGS_Install_Script 3.4 (P.R.I.S.M).ps1` | Version historique, conservée sous son nom d'origine |
 
 **Caractéristiques principales**
 
@@ -54,11 +54,11 @@ Deux implémentations fonctionnellement équivalentes sont maintenues en parall�
 
 ## 1. Conception
 
-La conception de PRISM répond à un besoin opérationnel précis : réduire le temps et la variabilité du provisionnement des postes tout en garantissant un résultat conforme aux standards LGS/IBM.
+La conception de LGS InstalleX répond à un besoin opérationnel précis : réduire le temps et la variabilité du provisionnement des postes tout en garantissant un résultat conforme aux standards LGS/IBM.
 
 **Objectifs de conception**
 
-- **Reproductibilité** — un poste provisionné par PRISM est identique à tout autre, quel que soit le technicien.
+- **Reproductibilité** — un poste provisionné par LGS InstalleX est identique à tout autre, quel que soit le technicien.
 - **Autonomie réseau** — les fichiers requis (raccourcis, PDF de procédures, favoris) sont embarqués dans le script en Base64, éliminant les échecs liés à l'authentification SharePoint/OneDrive et à l'encodage des URL rencontrés dans les versions antérieures.
 - **Robustesse** — chaque étape est isolée (try/except par étape) pour qu'un échec ponctuel n'interrompe pas l'ensemble du provisionnement.
 - **Traçabilité** — journalisation au fil de l'eau et journal de crash automatique.
@@ -66,7 +66,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 **Décisions d'architecture**
 
 - **GUI + worker thread** — l'interface (PyQt6 / WinForms) reste réactive pendant les opérations longues grâce à un thread de travail dédié (`QThread` côté Python), la communication vers l'UI se faisant par signaux thread-safe (`pyqtSignal`).
-- **Renommage machine sans `Rename-Computer`** — le renommage évite la cmdlet `Rename-Computer`, qui peut émettre `WM_ENDSESSION` / `InitiateSystemShutdown` et fermer prématurément la GUI. Il est réalisé via PowerShell par écriture registre (`Set-ItemProperty` sur `ComputerName` / `Hostname`) puis `Win32_ComputerSystem.Rename()` (WMI), sans aucun signal de redémarrage — le changement est effectif au prochain démarrage. Le nouveau nom est transmis par variable d'environnement (`$env:PRISM_NEW_NAME`), jamais interpolé dans le corps du script (anti-injection).
+- **Renommage machine sans `Rename-Computer`** — le renommage évite la cmdlet `Rename-Computer`, qui peut émettre `WM_ENDSESSION` / `InitiateSystemShutdown` et fermer prématurément la GUI. Il est réalisé via PowerShell par écriture registre (`Set-ItemProperty` sur `ComputerName` / `Hostname`) puis `Win32_ComputerSystem.Rename()` (WMI), sans aucun signal de redémarrage — le changement est effectif au prochain démarrage. Le nouveau nom est transmis par variable d'environnement (`$env:INSTALLEX_NEW_NAME`), jamais interpolé dans le corps du script (anti-injection).
 - **Appels système centralisés** — les commandes externes passent par un helper unique `run_cmd` (forçage UTF-8, `CREATE_NO_WINDOW`, timeout paramétrable, injection de variables d'environnement via `env_extra`). Les scripts PowerShell complexes (détection GPU) sont transmis en Base64 UTF-16LE via `-EncodedCommand` (helper `_ps_encoded`) pour éviter toute mauvaise interprétation des `$` et caractères spéciaux. PowerShell reste l'outil retenu là où il est le plus fiable (raccourci COM `WScript.Shell`, renommage, BitLocker, PSWindowsUpdate, signature Authenticode, requêtes CIM/WMI).
 - **Politique d'exécution `RemoteSigned`** — les appels PowerShell utilisent `-ExecutionPolicy RemoteSigned` (au lieu de `Bypass`) : les scripts système sollicités (PSGallery/WUA, cmdlets BitLocker) sont signés par Microsoft et s'exécutent sans abaisser la politique.
 - **Vérification des binaires avant exécution** — tout installeur téléchargé (repli hors winget : Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver, NVIDIA App) est contrôlé avant d'être lancé en administrateur : taille minimale et signature Authenticode de l'éditeur via la fonction `verify_authenticode` (`Get-AuthenticodeSignature`). Un fichier non signé, altéré ou non fiable est rejeté (fail-safe).
@@ -74,7 +74,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 - **Détection et confirmation uniformes** — le helper `_soft_present()` combine chemins de fichiers **et** clés Uninstall du registre (HKLM 64/32 bits + HKCU) pour toutes les applications ; la détection par chemin seule ratait les installations dans un dossier renommé d'une version à l'autre. Le même contrôle est rejoué **après** chaque installation : un `0` retourné par winget ne prouve pas que le logiciel est présent (cas constaté sur Office).
 - **Support MSI et téléchargements résilients** — `_install_from_url()` télécharge via `download_file()` (contexte TLS + repli `curl.exe`/Schannel) et lance automatiquement les `.msi` par `msiexec /i /qn /norestart`, les `.exe` recevant leurs arguments propres. Le code de sortie de l'installeur est lu et journalisé.
 - **Installation applicative pilotée par les données** — le catalogue logiciel (`LOGICIELS`) décrit chaque application (chemins de détection, motifs registre, identifiant winget, URL et méthode de repli) ; l'étape 6 l'exploite pour uniformiser détection et installation. Un dossier compagnon `C:\LGS_Deploy` (`LGS_DEPLOY_DIR`, sous-dossiers `ODT\` et `CommercialVantage\`) héberge les paquets de déploiement entreprise : il est requis pour Lenovo Commercial Vantage, et sert de repli pour Microsoft 365 Apps.
-- **Microsoft 365 Apps — winget d'abord, ODT en repli** — le paquet winget `Microsoft.Office` est le *même* `setup.exe` Click-to-Run que l'ODT, simplement téléchargé depuis le CDN Microsoft. PRISM l'installe donc via winget en lui passant **son propre `configuration.xml`** (`--custom "/configure <xml>"`), ce qui conserve la maîtrise totale du déploiement (fr-CA, canal, RemoveMSI) tout en évitant d'avoir à pré-déposer `setup.exe` sur chaque poste. En cas d'échec (winget absent, CDN inaccessible, « installer hash mismatch » du manifeste), l'ODT prend le relais — et si `setup.exe` n'a pas été pré-déposé dans `C:\LGS_Deploy\ODT`, il est **téléchargé automatiquement depuis le CDN Microsoft** (`_download_odt_setup`). Le succès est vérifié par la présence réelle des binaires Office, car winget peut retourner `0` alors que Click-to-Run a échoué.
+- **Microsoft 365 Apps — winget d'abord, ODT en repli** — le paquet winget `Microsoft.Office` est le *même* `setup.exe` Click-to-Run que l'ODT, simplement téléchargé depuis le CDN Microsoft. LGS InstalleX l'installe donc via winget en lui passant **son propre `configuration.xml`** (`--custom "/configure <xml>"`), ce qui conserve la maîtrise totale du déploiement (fr-CA, canal, RemoveMSI) tout en évitant d'avoir à pré-déposer `setup.exe` sur chaque poste. En cas d'échec (winget absent, CDN inaccessible, « installer hash mismatch » du manifeste), l'ODT prend le relais — et si `setup.exe` n'a pas été pré-déposé dans `C:\LGS_Deploy\ODT`, il est **téléchargé automatiquement depuis le CDN Microsoft** (`_download_odt_setup`). Le succès est vérifié par la présence réelle des binaires Office, car winget peut retourner `0` alors que Click-to-Run a échoué.
 - **Téléchargements résilients** — le helper `download_file` tente d'abord `urlopen` avec un contexte TLS construit à partir des magasins de certificats Windows (`ROOT` et `CA`, via `ssl.enum_certificates`), puis se replie sur `curl.exe` (intégré depuis Windows 10 1803), qui s'appuie sur Schannel. Ce double chemin évite les échecs de validation de certificat derrière un proxy d'inspection TLS d'entreprise.
 - **Inventaire matériel informatif** — `collect_inventory` / `log_inventory` interrogent CIM au démarrage et consignent la configuration du poste dans le journal. La collecte est volontairement non bloquante : elle ne lève jamais, et aucune décision d'installation n'en dépend.
 - **Nettoyage en fin de course** — `_cleanup_deploy_folder` supprime `C:\LGS_Deploy` une fois le provisionnement terminé (best-effort : les fichiers verrouillés sont ignorés, l'attribut lecture seule est levé si besoin, et une erreur n'interrompt jamais le script).
@@ -100,7 +100,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 1. **Création du dossier CAT** sur le bureau.
 2. **Extraction des fichiers embarqués** (Base64) dans le dossier CAT (PDF de procédures, raccourcis `.url`, etc.).
 3. **Raccourci bureau** `CAT.lnk` — créé via PowerShell COM `WScript.Shell` (aucune dépendance externe, disponible sur tout Windows).
-4. **Renommage machine** — `Set-ItemProperty` (registre) + `Win32_ComputerSystem.Rename()` (WMI), sans `Rename-Computer` ni signal de redémarrage, effectif au prochain démarrage. Nom passé via `$env:PRISM_NEW_NAME` (anti-injection), après validation NetBIOS.
+4. **Renommage machine** — `Set-ItemProperty` (registre) + `Win32_ComputerSystem.Rename()` (WMI), sans `Rename-Computer` ni signal de redémarrage, effectif au prochain démarrage. Nom passé via `$env:INSTALLEX_NEW_NAME` (anti-injection), après validation NetBIOS.
    - *4b — Nouvelle embauche (conditionnel)* : ouverture de Box IBM et attente de l'acceptation du User Agreement, uniquement si l'option « Nouvelle embauche » est cochée dans l'écran de configuration.
 5. **Microsoft 365 Apps** — via winget (`Microsoft.Office` + `configuration.xml` maison passé en `--custom /configure`), avec repli automatique sur l'Office Deployment Tool local (`setup.exe` dans `C:\LGS_Deploy\ODT\`) ; ignoré si Office est déjà présent.
 6. **Applications standard** — Firefox, Google Chrome, page d'accueil www.lgs.com (stratégies Chrome / Edge / Firefox), Slack, Box for Office, Box Tools, Adobe Acrobat Reader, Intel Driver & Support Assistant, **pilote NVIDIA + NVIDIA App (Entreprise)** si GPU NVIDIA détecté, **Lenovo Commercial Vantage** sur matériel Lenovo. Chaque application suit une chaîne de replis (voir ci-dessous) et son installation est confirmée avant de passer à la suivante.
@@ -141,7 +141,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 - **Portée d'installation adaptée au paquet** — `_winget_install` accepte un paramètre `scope` (« machine » par défaut). Slack, publié uniquement en portée utilisateur, est installé avec `scope=None` ; sans cela winget répond `-1978335216` (« aucun installeur applicable »), un code ni valide ni transitoire qui interrompait la boucle dès le premier essai. En garde-fou, un `-1978335216` obtenu malgré une portée imposée déclenche un nouvel essai sans `--scope`.
 - **Vérification d'intégrité des téléchargements** — fonction `verify_authenticode` (`Get-AuthenticodeSignature`, disponible sur toutes les versions de Windows) appelée avant exécution sur chaque installeur en repli (Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver, NVIDIA App), en plus d'un contrôle de taille minimale. Le binaire est rejeté avant exécution si la signature est absente ou non valide ; en cas d'échec sur Intel DSA, seule cette application est ignorée sans interrompre le reste de l'étape 6.
 - **Détection GPU NVIDIA robuste** — la détection s'appuie sur l'ID fabricant PCI `VEN_10DE` (présent dès l'image, avant même l'installation du pilote, là où un filtre sur le nom échouerait car la carte apparaît en « 3D Video Controller »). La version du pilote installé est lue via `nvidia-smi` (repli CIM), et une table `NVIDIA_DEV_NAMES` fournit le nom commercial des GPU Ada laptop quand CIM renvoie un nom générique. Un log de diagnostic liste les périphériques `VEN_10DE` présents.
-- **Renommage & raccourci via PowerShell** — le renommage machine (`Set-ItemProperty` + WMI `Rename()`, nom via `$env:PRISM_NEW_NAME`) et la création de raccourci (`WScript.Shell`) passent par PowerShell ; `Rename-Computer` est explicitement évité pour ne pas fermer la GUI.
+- **Renommage & raccourci via PowerShell** — le renommage machine (`Set-ItemProperty` + WMI `Rename()`, nom via `$env:INSTALLEX_NEW_NAME`) et la création de raccourci (`WScript.Shell`) passent par PowerShell ; `Rename-Computer` est explicitement évité pour ne pas fermer la GUI.
 - **Appels centralisés** — helper unique `run_cmd` (forçage UTF-8, `CREATE_NO_WINDOW`, `env_extra`) et `_ps_encoded` (scripts PowerShell en Base64 UTF-16LE via `-EncodedCommand`, avec `$ProgressPreference='SilentlyContinue'` pour ne pas polluer la sortie des cmdlets CIM).
 - **Validation du nom d'ordinateur** par expression régulière conforme NetBIOS (`[A-Za-z0-9-]{1,15}`), dupliquée volontairement entre la validation GUI (`SetupDialog._launch`) et le thread d'exécution (`step4_computer_name`) — les deux doivent rester identiques — comme garde anti-injection avant le renommage.
 - **Journal sur le bureau** — écrit au fil de l'eau sur le bureau sous `LGS_Log_Detaile_<nom>_<horodatage>.txt`, consultable immédiatement sans raccourci ni élévation. La clé de récupération BitLocker n'est jamais journalisée.
@@ -153,7 +153,7 @@ La conception de PRISM répond à un besoin opérationnel précis : réduire le 
 
 **Outil compagnon**
 
-- **PRISM Asset Updater** (`PRISM_Updater.py`, Python / PyQt6) — interface glisser-déposer permettant à du personnel non technique de remplacer les fichiers Base64 embarqués sans connaissances en développement. L'outil cible **le script Python** (`LGS_Install_Script_PRISM_12_.py`) : il localise le bloc `FICHIERS_EMBARQUES`, ré-encode les fichiers déposés en Base64 (lignes de 64 caractères) et réécrit le bloc en UTF-8 avec BOM, après création automatique d'une sauvegarde horodatée du script d'origine.
+- **LGS InstalleX Asset Updater** (`LGS_InstalleX_Updater.py`, Python / PyQt6) — interface glisser-déposer permettant à du personnel non technique de remplacer les fichiers Base64 embarqués sans connaissances en développement. L'outil cible **le script Python** (`LGS_InstalleX.py`) : il localise le bloc `FICHIERS_EMBARQUES`, ré-encode les fichiers déposés en Base64 (lignes de 64 caractères) et réécrit le bloc en UTF-8 avec BOM, après création automatique d'une sauvegarde horodatée du script d'origine.
 
 ---
 
@@ -201,7 +201,7 @@ L'ensemble de la documentation est destiné à la fois à l'usage opérationnel 
 
 ## 5. Interaction proactive et continue avec l'équipe de sécurité IBM
 
-PRISM effectue des opérations à privilèges élevés (exécution en administrateur, écriture registre, chiffrement BitLocker, jonction d'identité, installation logicielle). À ce titre, l'engagement avec l'équipe de sécurité IBM fait partie intégrante du cycle de vie et non d'une étape finale.
+LGS InstalleX effectue des opérations à privilèges élevés (exécution en administrateur, écriture registre, chiffrement BitLocker, jonction d'identité, installation logicielle). À ce titre, l'engagement avec l'équipe de sécurité IBM fait partie intégrante du cycle de vie et non d'une étape finale.
 
 **Principes d'engagement**
 
@@ -244,13 +244,13 @@ PRISM effectue des opérations à privilèges élevés (exécution en administra
 - **Recommandé** : renommer le script en `.pyw` et double-cliquer → exécution sans aucune fenêtre console, du début à la fin.
 - **Alternative** : lancer depuis une console administrateur :
   ```
-  python "C:\chemin\complet\LGS_Install_Script_PRISM_12_.py"
+  python "C:\chemin\complet\LGS_InstalleX.py"
   ```
 
 **Dépannage**
 
 - Si rien ne s'affiche après le UAC : vérifier que PyQt6 est installé pour le bon interpréteur (`py -0p`, `assoc .py`, `ftype Python.File`).
-- Journal de crash automatique : `%TEMP%\PRISM_crash.log` (ouvert automatiquement en cas d'erreur).
+- Journal de crash automatique : `%TEMP%\InstalleX_crash.log` (ouvert automatiquement en cas d'erreur).
 - Journal détaillé d'installation : `LGS_Log_Detaile_<nom>_<horodatage>.txt`, sur le bureau. Attention : si l'élévation UAC utilise un compte administrateur différent, le fichier atterrit sur le bureau de ce compte.
 - Paquets compagnons dans `C:\LGS_Deploy` : `CommercialVantage\VantageInstaller.exe` (Lenovo Vantage — requis, sinon l'application est ignorée) et `ODT\setup.exe` (facultatif : téléchargé automatiquement depuis le CDN Microsoft s'il est absent). Le dossier est supprimé automatiquement en fin de provisionnement.
 - Échec de téléchargement derrière un proxy d'entreprise : `download_file` bascule seul sur `curl.exe`. Si les deux chemins échouent, vérifier que le certificat d'inspection TLS est bien présent dans le magasin Windows (`ROOT` / `CA`).
@@ -261,13 +261,13 @@ PRISM effectue des opérations à privilèges élevés (exécution en administra
 
 ## Historique des versions
 
-- **Lignée v3.x → PRISM 7/8** (PowerShell / WinForms) — sourcing SharePoint/OneDrive, puis bascule vers l'embarquement Base64, GUI thème sombre + branding LGS, détection GPU NVIDIA, Adobe Reader dynamique, import des favoris Edge, automatisation Windows Update, détection langue française, flux « Nouvelle embauche ».
+- **Lignée v3.x → LGS InstalleX (lignée 7/8)** (PowerShell / WinForms) — sourcing SharePoint/OneDrive, puis bascule vers l'embarquement Base64, GUI thème sombre + branding LGS, détection GPU NVIDIA, Adobe Reader dynamique, import des favoris Edge, automatisation Windows Update, détection langue française, flux « Nouvelle embauche ».
 - **v3.4 (PowerShell)** — dernière version WinForms d'origine (~2 553 lignes) avant conversion Python.
-- **PRISM 8** — ajout de l'étape 10 (BitLocker → Entra ID), grille GUI à 6 rangées, correctif de l'icône (LOGO_B64), validation du nom NetBIOS, timeouts adaptatifs, log incrémental.
-- **PRISM 12** (courant, Python / PyQt6, version applicative 3.8.x) — déploiement winget, sauvegarde BitLocker/Entra ID, correctifs UTF-8, élévation UAC durcie (chemin absolu + arguments quotés), relance via `pythonw.exe`, suppression des fenêtres console enfants (`CREATE_NO_WINDOW`).
+- **LGS InstalleX 8** — ajout de l'étape 10 (BitLocker → Entra ID), grille GUI à 6 rangées, correctif de l'icône (LOGO_B64), validation du nom NetBIOS, timeouts adaptatifs, log incrémental.
+- **LGS InstalleX** (courant, Python / PyQt6, version applicative 3.8.x) — déploiement winget, sauvegarde BitLocker/Entra ID, correctifs UTF-8, élévation UAC durcie (chemin absolu + arguments quotés), relance via `pythonw.exe`, suppression des fenêtres console enfants (`CREATE_NO_WINDOW`).
   - **v3.8** — première itération du durcissement : vérification Authenticode des installeurs en repli, installation applicative pilotée par le catalogue `LOGICIELS`.
   - **v3.8.1 (courant)** — durcissement sécurité et robustesse matérielle :
-    - **Sécurité** — `verify_authenticode` bascule sur `Get-AuthenticodeSignature` (au lieu de `WinVerifyTrust`/ctypes), appliquée avant exécution à Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver et NVIDIA App (contrôle de taille + signature ; l'empreinte SHA-256 est retirée). Politique PowerShell passée de `Bypass` à `RemoteSigned`. Renommage machine sécurisé par variable d'environnement `$env:PRISM_NEW_NAME` (anti-injection). Journal temporairement déplacé dans `%PROGRAMDATA%\LGS\Logs` avec ACL restreintes (`icacls`) — **choix annulé depuis**, le journal est de nouveau écrit sur le bureau.
+    - **Sécurité** — `verify_authenticode` bascule sur `Get-AuthenticodeSignature` (au lieu de `WinVerifyTrust`/ctypes), appliquée avant exécution à Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver et NVIDIA App (contrôle de taille + signature ; l'empreinte SHA-256 est retirée). Politique PowerShell passée de `Bypass` à `RemoteSigned`. Renommage machine sécurisé par variable d'environnement `$env:INSTALLEX_NEW_NAME` (anti-injection). Journal temporairement déplacé dans `%PROGRAMDATA%\LGS\Logs` avec ACL restreintes (`icacls`) — **choix annulé depuis**, le journal est de nouveau écrit sur le bureau.
     - **Détection GPU NVIDIA réécrite** — clé sur l'ID PCI `VEN_10DE` (fonctionne sur image fraîche sans pilote), version pilote via `nvidia-smi`, table `NVIDIA_DEV_NAMES` pour les GPU Ada laptop, commandes PowerShell en Base64 (`_ps_encoded` / `-EncodedCommand`), logs de diagnostic.
     - **Nouvelles installations** — pilote NVIDIA + NVIDIA App (Entreprise), Lenovo Commercial Vantage, et Microsoft 365 Apps via l'Office Deployment Tool (dossier compagnon `C:\LGS_Deploy`).
     - **Office : winget prioritaire, ODT en repli** — ajout de `_install_office_winget()` : installation par `winget install --id Microsoft.Office` avec le `configuration.xml` LGS transmis en `--custom "/configure"`, ce qui supprime l'obligation de pré-déposer `setup.exe` sur le poste. Repli automatique sur l'ODT local en cas d'échec (winget indisponible, CDN inaccessible, hash de manifeste obsolète) et vérification effective de la présence d'Office après installation.

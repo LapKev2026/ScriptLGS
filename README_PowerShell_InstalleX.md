@@ -1,4 +1,4 @@
- # LGS Install Script v3.4 — P.R.I.S.M
+﻿ # LGS Install Script v3.4 — LGS InstalleX
 
 > **PowerShell Remote Initialization & System Management**
 
@@ -71,13 +71,13 @@ Ouvrir PowerShell dans le dossier contenant le script.
 Exécuter :
 
 ```powershell
-.\LGS_Install_Script 3.4 (P.R.I.S.M).ps1
+.\LGS_Install_Script 3.4 (LGS InstalleX).ps1
 ```
 
 ou
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\LGS_Install_Script 3.4 (P.R.I.S.M).ps1"
+powershell.exe -ExecutionPolicy Bypass -File ".\LGS_Install_Script 3.4 (LGS InstalleX).ps1"
 ```
 
 ---
@@ -112,7 +112,7 @@ Lors de l'exécution :
 # Structure du projet
 
 ```text
-LGS_Install_Script 3.4 (P.R.I.S.M).ps1
+LGS_Install_Script 3.4 (LGS InstalleX).ps1
 README.md
 ```
 
@@ -177,7 +177,7 @@ Vérifier :
 - que le fichier n'est pas bloqué par Windows :
 
 ```powershell
-Unblock-File ".\LGS_Install_Script 3.4 (P.R.I.S.M).ps1"
+Unblock-File ".\LGS_Install_Script 3.4 (LGS InstalleX).ps1"
 ```
 
 - que PowerShell est bien en version 5.1 minimum.
@@ -196,7 +196,7 @@ Si le script génère un fichier journal, celui-ci permet de :
 
 # Auteur
 
-**LGS Install Script v3.4 — P.R.I.S.M**
+**LGS Install Script v3.4 — LGS InstalleX**
 
 PowerShell Remote Initialization & System Management
 

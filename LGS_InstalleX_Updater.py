@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PRISM Updater — Outil de mise à jour des fichiers embarqués
+LGS InstalleX Updater — Outil de mise à jour des fichiers embarqués
 Glissez-déposez vos nouveaux fichiers et cliquez sur Appliquer.
 © Groupe LGS — une Société IBM
 """
@@ -260,10 +260,10 @@ class UpdateWorker(QThread):
 
 
 # ─── Fenêtre principale ───────────────────────────────────────────────────────
-class PRISMUpdater(QMainWindow):
+class InstalleXUpdater(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PRISM Updater — Mise à jour des fichiers embarqués")
+        self.setWindowTitle("LGS InstalleX Updater — Mise à jour des fichiers embarqués")
         self.setMinimumSize(720, 660)
         self.pending_files: dict[str, bool] = {}   # chemin → is_known
         self.script_path: str = ""
@@ -280,10 +280,10 @@ class PRISMUpdater(QMainWindow):
         root.setSpacing(16)
 
         # Titre
-        title = QLabel("PRISM Updater")
+        title = QLabel("LGS InstalleX Updater")
         title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {TEXT};")
-        sub   = QLabel("Mettez à jour les fichiers embarqués dans le script PRISM sans toucher au code.")
+        sub   = QLabel("Mettez à jour les fichiers embarqués dans le script LGS InstalleX sans toucher au code.")
         sub.setStyleSheet(f"color: {MUTED}; font-size: 10pt;")
         root.addWidget(title)
         root.addWidget(sub)
@@ -296,7 +296,7 @@ class PRISMUpdater(QMainWindow):
         script_row = QHBoxLayout()
         self.script_lbl = QLabel("Aucun script sélectionné")
         self.script_lbl.setStyleSheet(f"color: {MUTED}; font-size: 9pt;")
-        choose_btn = QPushButton("📄  Choisir le script PRISM (.py)")
+        choose_btn = QPushButton("📄  Choisir le script LGS InstalleX (.py)")
         choose_btn.setFixedHeight(36)
         choose_btn.clicked.connect(self._pick_script)
         choose_btn.setStyleSheet(self._btn_style(secondary=True))
@@ -445,11 +445,11 @@ class PRISMUpdater(QMainWindow):
     # ── Sélection du script ────────────────────────────────────────────────────
     def _pick_script(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Sélectionner le script PRISM", "", "Python (*.py)"
+            self, "Sélectionner le script LGS InstalleX", "", "Python (*.py)"
         )
         if not path:
             return
-        # Vérifier que c'est bien un script PRISM
+        # Vérifier que c'est bien un script LGS InstalleX
         try:
             content = Path(path).read_text(encoding="utf-8-sig", errors="replace")
         except Exception as e:
@@ -459,7 +459,7 @@ class PRISMUpdater(QMainWindow):
             QMessageBox.warning(
                 self, "Script non reconnu",
                 f"Le fichier sélectionné ne contient pas le marqueur :\n{MARKER_START}\n\n"
-                "Assurez-vous de choisir le bon script PRISM."
+                "Assurez-vous de choisir le bon script LGS InstalleX."
             )
             return
         self.script_path = path
@@ -519,7 +519,7 @@ class PRISMUpdater(QMainWindow):
     # ── Appliquer ─────────────────────────────────────────────────────────────
     def _apply(self):
         if not self.script_path:
-            QMessageBox.warning(self, "Script manquant", "Veuillez d'abord sélectionner le script PRISM.")
+            QMessageBox.warning(self, "Script manquant", "Veuillez d'abord sélectionner le script LGS InstalleX.")
             return
         if not self.pending_files:
             QMessageBox.warning(self, "Aucun fichier", "Ajoutez au moins un fichier à mettre à jour.")
@@ -560,6 +560,6 @@ class PRISMUpdater(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    window = PRISMUpdater()
+    window = InstalleXUpdater()
     window.show()
     sys.exit(app.exec())
