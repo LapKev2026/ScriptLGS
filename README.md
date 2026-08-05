@@ -4,7 +4,7 @@
 
 Outil de provisionnement automatisé des postes de travail pour les déploiements Groupe LGS — une société IBM.
 
-> Version applicative : **3.8.1** — Itération livrée : **LGS InstalleX** (Python / PyQt6)
+> Version applicative : **1.0** (Python / PyQt6) — versionnage repris à 1.0 lors du passage de P.R.I.S.M à LGS InstalleX ; la lignée technique précédente s'arrêtait à 3.8.1
 > Version parallèle maintenue : **PowerShell / WinForms** (lignée v3.x)
 > © Copyright Groupe LGS — une société IBM
 
@@ -261,12 +261,20 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 ## Historique des versions
 
-- **Lignée v3.x → LGS InstalleX (lignée 7/8)** (PowerShell / WinForms) — sourcing SharePoint/OneDrive, puis bascule vers l'embarquement Base64, GUI thème sombre + branding LGS, détection GPU NVIDIA, Adobe Reader dynamique, import des favoris Edge, automatisation Windows Update, détection langue française, flux « Nouvelle embauche ».
+> L'outil s'est appelé **P.R.I.S.M** jusqu'à la version 3.8.1 incluse. Les entrées ci-dessous conservent le nom porté à l'époque : le renommage en **LGS InstalleX** s'accompagne d'une remise à zéro du versionnage à **1.0**, et n'efface pas la lignée technique qui l'a précédé.
+
+### LGS InstalleX
+
+- **v1.0 (courant)** — première version sous le nom LGS InstalleX. Reprend l'intégralité des fonctionnalités et correctifs de P.R.I.S.M 3.8.1 ; seuls le nom et le versionnage changent. Identifiants internes alignés (`INSTALLEX_VERSION`, `$env:INSTALLEX_NEW_NAME`, `InstalleX_crash.log`).
+
+### P.R.I.S.M (lignée précédente)
+
+- **Lignée v3.x → PRISM 7/8** (PowerShell / WinForms) — sourcing SharePoint/OneDrive, puis bascule vers l'embarquement Base64, GUI thème sombre + branding LGS, détection GPU NVIDIA, Adobe Reader dynamique, import des favoris Edge, automatisation Windows Update, détection langue française, flux « Nouvelle embauche ».
 - **v3.4 (PowerShell)** — dernière version WinForms d'origine (~2 553 lignes) avant conversion Python.
-- **LGS InstalleX 8** — ajout de l'étape 10 (BitLocker → Entra ID), grille GUI à 6 rangées, correctif de l'icône (LOGO_B64), validation du nom NetBIOS, timeouts adaptatifs, log incrémental.
-- **LGS InstalleX** (courant, Python / PyQt6, version applicative 3.8.x) — déploiement winget, sauvegarde BitLocker/Entra ID, correctifs UTF-8, élévation UAC durcie (chemin absolu + arguments quotés), relance via `pythonw.exe`, suppression des fenêtres console enfants (`CREATE_NO_WINDOW`).
+- **PRISM 8** — ajout de l'étape 10 (BitLocker → Entra ID), grille GUI à 6 rangées, correctif de l'icône (LOGO_B64), validation du nom NetBIOS, timeouts adaptatifs, log incrémental.
+- **PRISM 12** (Python / PyQt6, version applicative 3.8.x) — déploiement winget, sauvegarde BitLocker/Entra ID, correctifs UTF-8, élévation UAC durcie (chemin absolu + arguments quotés), relance via `pythonw.exe`, suppression des fenêtres console enfants (`CREATE_NO_WINDOW`).
   - **v3.8** — première itération du durcissement : vérification Authenticode des installeurs en repli, installation applicative pilotée par le catalogue `LOGICIELS`.
-  - **v3.8.1 (courant)** — durcissement sécurité et robustesse matérielle :
+  - **v3.8.1** — durcissement sécurité et robustesse matérielle (dernière version sous le nom P.R.I.S.M) :
     - **Sécurité** — `verify_authenticode` bascule sur `Get-AuthenticodeSignature` (au lieu de `WinVerifyTrust`/ctypes), appliquée avant exécution à Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver et NVIDIA App (contrôle de taille + signature ; l'empreinte SHA-256 est retirée). Politique PowerShell passée de `Bypass` à `RemoteSigned`. Renommage machine sécurisé par variable d'environnement `$env:INSTALLEX_NEW_NAME` (anti-injection). Journal temporairement déplacé dans `%PROGRAMDATA%\LGS\Logs` avec ACL restreintes (`icacls`) — **choix annulé depuis**, le journal est de nouveau écrit sur le bureau.
     - **Détection GPU NVIDIA réécrite** — clé sur l'ID PCI `VEN_10DE` (fonctionne sur image fraîche sans pilote), version pilote via `nvidia-smi`, table `NVIDIA_DEV_NAMES` pour les GPU Ada laptop, commandes PowerShell en Base64 (`_ps_encoded` / `-EncodedCommand`), logs de diagnostic.
     - **Nouvelles installations** — pilote NVIDIA + NVIDIA App (Entreprise), Lenovo Commercial Vantage, et Microsoft 365 Apps via l'Office Deployment Tool (dossier compagnon `C:\LGS_Deploy`).
