@@ -69490,6 +69490,8 @@ function Get-CleanSerial($candidates) {
     foreach ($c in $candidates) {
         if ($null -eq $c) { continue }
         $s = "$c".Trim().TrimEnd('.')
+        # AdapterSerialNumber arrive rembourré et suffixé : « S7G8NF1X923400      _0001 ».
+        $s = ($s -replace '\s+_\d+$', '') -replace '\s+', ''
         if ($s -eq '') { continue }
         # EUI-64 : 4 groupes de 4 chiffres hexa (avec ou sans séparateur)
         if ($s -match '^[0-9A-Fa-f]{4}([ _-]?[0-9A-Fa-f]{4}){3}$') { continue }
@@ -69576,7 +69578,12 @@ try {
                 $sw = ($w32  | Where-Object { $_.Index  -eq $num } | Select-Object -First 1).SerialNumber
                 $sm = ($mdsk | Where-Object { $_.Number -eq $num } | Select-Object -First 1).SerialNumber
             }
-            $serial = Get-CleanSerial @($sw, $sm, $d.SerialNumber)
+            # FruId et AdapterSerialNumber EN PREMIER : sur NVMe, ce sont les
+            # seules propriétés qui portent le numéro imprimé sur l'étiquette.
+            # SerialNumber / UniqueId des trois classes renvoient tous l'EUI-64
+            # du contrôleur (vérifié : Windows le préfixe lui-même « eui. »).
+            $serial = Get-CleanSerial @($d.FruId, $d.AdapterSerialNumber,
+                                        $sw, $sm, $d.SerialNumber)
             if ($serial) { Emit "DisqueSerie$i" $serial }
             if ($d.FirmwareVersion) { Emit "DisqueFirmware$i" ($d.FirmwareVersion.Trim()) }
         }
