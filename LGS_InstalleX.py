@@ -66524,14 +66524,18 @@ STEPS = [
 # ─── CHEMINS DE DÉTECTION ET IDS WINGET ───────────────────────────────────────
 LOGICIELS = {
     "firefox": {
-        "winget_id": "Mozilla.Firefox",
-        # Repli en MSI (et non plus l'installeur .exe grand public) : déployable,
-        # idempotent, et cohérent avec les stratégies Firefox posées au registre.
-        # Langue fr-CA plutôt que fr : c'est la locale des postes LGS.
-        "dl_url":    "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64-msi&lang=fr-CA",
+        # « Mozilla.Firefox » est le paquet en-US : c'est lui qui installait un
+        # Firefox en ANGLAIS. Mozilla publie un paquet winget PAR LANGUE, d'où
+        # le suffixe .fr. (Il n'existe pas de fr-CA chez Mozilla : la locale
+        # française pour Firefox est « fr », y compris au Canada.)
+        "winget_id": "Mozilla.Firefox.fr",
+        # Repli en MSI : déployable, idempotent, et cohérent avec les stratégies
+        # Firefox posées au registre. Le nom de produit est bien
+        # « firefox-msi-latest-ssl » — « os=win64-msi » renvoie un 404.
+        "dl_url":    "https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=fr",
         "dl_args":   [],                  # MSI : arguments gérés par msiexec
         # Ancien installeur .exe conservé en 2e repli si l'URL MSI change.
-        "dl_url_legacy":  "https://download.mozilla.org/?product=firefox-latest&os=win64&lang=fr",
+        "dl_url_legacy":  "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=fr",
         "dl_args_legacy": ["/S"],
         "paths": [
             r"C:\Program Files\Mozilla Firefox\firefox.exe",

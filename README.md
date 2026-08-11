@@ -112,7 +112,7 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 | Microsoft 365 Apps | winget + `configuration.xml` LGS | ODT local, puis ODT téléchargé du CDN |
 | Slack | winget **en portée machine** → paquet MSIX provisionné pour tous les profils | — (le MSI `slack.com/ssb` redirige vers un fichier absent du CDN) |
 | Google Chrome | winget | MSI Chrome Enterprise, puis installeur `.exe` |
-| Firefox | winget | MSI `fr-CA`, puis installeur `.exe` |
+| Firefox | winget **`Mozilla.Firefox.fr`** (paquet français) | MSI `lang=fr`, puis installeur `.exe` `lang=fr` |
 | Intel DSA | winget `Intel.IntelDriverAndSupportAssistant` | téléchargement direct `dsadata.intel.com` |
 | Box for Office / Box Tools | winget | message d'installation manuelle |
 | Adobe Acrobat Reader | winget | API Adobe (endpoint non documenté) |
@@ -121,6 +121,8 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 
 > **Commercial Vantage et le Microsoft Store** — le paquet de déploiement Lenovo reste la méthode de référence : il installe l'application **et** le System Update Helper (`VantageInstaller Install -Vantage -SuHelper`). Le repli Store (`9NR5B8GVVM13`) n'installe que l'application ; il évite de ne rien installer du tout quand le paquet est absent du poste, mais l'installation reste incomplète et le journal le signale. Attention à ne pas confondre avec `9WZDNCRFJ4MV`, la version **grand public** de Vantage, qui embarque des fonctions promotionnelles et de surveillance dark web sans place sur un poste d'entreprise.
 >
+> **Firefox et la langue** — Mozilla publie **un paquet winget par langue**. L'identifiant générique `Mozilla.Firefox` correspond au paquet **en-US** : il installait donc un Firefox en anglais. Le catalogue cible désormais `Mozilla.Firefox.fr`. À noter : Mozilla ne publie pas de locale `fr-CA` pour Firefox — la locale française est `fr`, y compris pour les postes canadiens.
+
 > **Slack et le Microsoft Store** — inutile d'y recourir : la source `winget` publie déjà les deux variantes du paquet (MSIX en portée machine, `SlackSetup.exe` en portée utilisateur). Le Store ne proposerait que le MSIX, précisément ce que refusent les images où le déploiement AppX est restreint.
 
 > **Slack et la portée d'installation** — en portée machine, winget sert le paquet **MSIX** de Slack, provisionné pour tous les profils : c'est le comportement attendu en provisionnement, et la raison pour laquelle `--scope machine` est conservé. En portée utilisateur, Slack n'atterrirait que dans le profil du technicien. Conséquence importante pour la détection : un Slack installé en MSIX réside dans `C:\Program Files\WindowsApps` et n'expose **aucun** des chemins classiques — d'où la détection par registre et par nom de paquet Appx (`appx_name`).
