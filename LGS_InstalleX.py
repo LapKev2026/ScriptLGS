@@ -68928,28 +68928,48 @@ try {
     # ÉTAPE 8 — Configuration Windows
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _configure_screensaver(self):
-        """Configure l'écran de veille (Ribbons, 10 min, verrouillage) pour TOUS
-        les utilisateurs — pas seulement le compte admin élevé.
+    # ─────────────────────────────────────────────────────────────────────────
+    # Écriture multi-ruches (partagée : écran de veille + configuration régionale)
+    # ─────────────────────────────────────────────────────────────────────────
 
-        Le script tourne élevé : HKEY_CURRENT_USER pointe vers la ruche de l'ADMIN,
-        pas celle de l'utilisateur final. On écrit donc dans :
+    # ATTENTION — le filtre ne peut pas se limiter à « S-1-5-21- » :
+    #   S-1-5-21-…  comptes locaux et Active Directory
+    #   S-1-12-1-…  comptes ENTRA ID (Azure AD)
+    # Or ce script joint lui-même les postes à Entra ID : sur ces machines,
+    # l'utilisateur final porte un SID S-1-12-1-… et n'était donc JAMAIS traité.
+    # Les SID de services (S-1-5-18/19/20, S-1-5-80-…) et .DEFAULT sont
+    # volontairement exclus : ce ne sont pas des sessions utilisateur.
+    USER_SID_RE = re.compile(r"^S-1-(?:5-21|12-1)-[\d-]+$")
+
+    @classmethod
+    def _loaded_user_sids(cls) -> list:
+        """SID des ruches utilisateur réelles actuellement chargées dans HKU."""
+        sids, i = [], 0
+        while True:
+            try:
+                sub = winreg.EnumKey(winreg.HKEY_USERS, i)
+            except OSError:
+                break
+            i += 1
+            if cls.USER_SID_RE.match(sub):
+                sids.append(sub)
+        return sids
+
+    def _write_all_user_hives(self, subkey: str, values: dict, label: str) -> int:
+        """Écrit `values` sous HKU\\<ruche>\\<subkey> pour TOUS les utilisateurs.
+
+        Le script tourne élevé : HKEY_CURRENT_USER pointe vers la ruche de
+        l'ADMIN, pas celle de l'utilisateur final. On écrit donc dans :
           - le profil par défaut (C:\\Users\\Default\\NTUSER.DAT) → tout nouvel
             utilisateur hérite du réglage dès sa 1re ouverture de session ;
-          - chaque ruche utilisateur réelle déjà chargée (HKU\\S-1-5-21-*).
-        """
-        values = {
-            "ScreenSaveActive":    "1",
-            "SCRNSAVE.EXE":        r"C:\Windows\System32\Ribbons.scr",
-            "ScreenSaveTimeOut":   "600",   # 10 min (en secondes)
-            "ScreenSaverIsSecure": "1",     # verrouillage à la reprise
-        }
+          - chaque ruche utilisateur déjà chargée.
 
-        def _write(hive_prefix: str) -> bool:
+        Retourne le nombre de ruches effectivement écrites.
+        """
+        def _write(prefix: str) -> bool:
             ok = True
             for name, val in values.items():
-                if not reg_set(winreg.HKEY_USERS,
-                               hive_prefix + r"\Control Panel\Desktop", name, val):
+                if not reg_set(winreg.HKEY_USERS, prefix + "\\" + subkey, name, val):
                     ok = False
             return ok
 
@@ -68966,57 +68986,107 @@ try {
                 try:
                     if _write("INSTALLEX_DEFAULT"):
                         applied += 1
-                        self.log("Écran de veille appliqué au profil par défaut.", "OK")
+                        self.log(f"{label} — appliqué au profil par défaut.", "OK")
                 except Exception as exc:
-                    self.log(f"Écran de veille (profil défaut) : {exc}", "WARN")
+                    self.log(f"{label} (profil défaut) : {exc}", "WARN")
                 finally:
                     run_cmd(["reg", "unload", r"HKU\INSTALLEX_DEFAULT"], timeout=30)
             else:
-                self.log("Écran de veille — profil par défaut non chargeable.", "WARN")
+                self.log(f"{label} — profil par défaut non chargeable.", "WARN")
 
-        # 2. Ruches utilisateurs réelles déjà chargées.
-        #
-        # ATTENTION — le filtre ne peut pas se limiter à « S-1-5-21- » :
-        #   S-1-5-21-…  comptes locaux et Active Directory
-        #   S-1-12-1-…  comptes ENTRA ID (Azure AD)
-        # Or ce script joint lui-même les postes à Entra ID : sur ces machines,
-        # l'utilisateur final porte un SID S-1-12-1-… et n'était donc JAMAIS
-        # traité. Seul le profil par défaut recevait le réglage, ce qui ne
-        # couvre pas un profil déjà créé.
-        # Les SID de services (S-1-5-18/19/20, S-1-5-80-…) et .DEFAULT sont
-        # volontairement exclus : ce ne sont pas des sessions utilisateur.
-        USER_SID_RE = re.compile(r"^S-1-(?:5-21|12-1)-[\d-]+$")
+        # 2. Ruches utilisateur réelles déjà chargées.
         try:
-            sids, i = [], 0
-            while True:
-                try:
-                    sub = winreg.EnumKey(winreg.HKEY_USERS, i)
-                except OSError:
-                    break
-                i += 1
-                if USER_SID_RE.match(sub):
-                    sids.append(sub)
+            sids = self._loaded_user_sids()
             for sid in sids:
                 if _write(sid):
                     applied += 1
-                    self.log(f"Écran de veille appliqué à la ruche {sid}", "CMD")
+                    self.log(f"{label} — ruche {sid}", "CMD")
             if sids:
-                self.log(f"Écran de veille appliqué à {len(sids)} session(s) utilisateur.", "OK")
+                self.log(f"{label} — appliqué à {len(sids)} session(s) utilisateur.", "OK")
             else:
                 self.log(
-                    "Écran de veille — aucune ruche utilisateur chargée ; seul le "
-                    "profil par défaut est configuré.", "WARN"
+                    f"{label} — aucune ruche utilisateur chargée ; seul le profil "
+                    "par défaut est configuré.", "WARN"
                 )
         except Exception as exc:
-            self.log(f"Écran de veille (ruches chargées) : {exc}", "WARN")
+            self.log(f"{label} (ruches chargées) : {exc}", "WARN")
 
         if applied == 0:
-            self.log("Écran de veille — aucune ruche cible trouvée.", "WARN")
-        else:
+            self.log(f"{label} — aucune ruche cible trouvée.", "WARN")
+        return applied
+
+    def _configure_screensaver(self):
+        """Configure l'écran de veille (Ribbons, 10 min, verrouillage) pour TOUS
+        les utilisateurs — pas seulement le compte admin élevé."""
+        values = {
+            "ScreenSaveActive":    "1",
+            "SCRNSAVE.EXE":        r"C:\Windows\System32\Ribbons.scr",
+            "ScreenSaveTimeOut":   "600",   # 10 min (en secondes)
+            "ScreenSaverIsSecure": "1",     # verrouillage à la reprise
+        }
+        applied = self._write_all_user_hives(
+            r"Control Panel\Desktop", values, "Écran de veille"
+        )
+        if applied:
             self.log("Écran de veille : Ribbons.scr, 10 min, verrouillage activé.", "OK")
 
         # Appliquer à la session OUVERTE (voir _apply_screensaver_now).
         self._apply_screensaver_now(int(values["ScreenSaveTimeOut"]))
+
+    # Fuseau des postes LGS (Québec). Nom d'ID Windows, invariant de la langue.
+    TIMEZONE_ID = "Eastern Standard Time"
+    GEO_ID_CANADA = 39          # Set-WinHomeLocation : code géographique Canada
+
+    def _configure_regional(self):
+        """Configuration régionale : fr-CA, date ISO (yyyy-MM-dd), horloge 24 h.
+
+        Écrit dans « Control Panel\\International » de toutes les ruches (profil
+        par défaut + sessions chargées) pour la même raison que l'écran de veille :
+        en contexte élevé, HKCU est la ruche de l'admin, pas celle de l'utilisateur.
+
+        Le fuseau horaire et la position géographique sont, eux, des réglages
+        MACHINE : ils se posent une seule fois via tzutil / Set-WinHomeLocation.
+        """
+        self.log("CONFIGURATION RÉGIONALE", "SECTION")
+
+        values = {
+            "LocaleName":   "fr-CA",
+            "sShortDate":   "yyyy-MM-dd",     # format ISO 8601
+            "sLongDate":    "d MMMM yyyy",
+            "sShortTime":   "HH:mm",          # 24 h
+            "sTimeFormat":  "HH:mm:ss",
+            "iTime":        "1",              # 1 = horloge 24 h
+            "iTLZero":      "1",              # heure sur 2 chiffres (09:05)
+            "sDate":        "-",              # séparateur de date ISO
+            "sTime":        ":",
+        }
+        self._write_all_user_hives(
+            r"Control Panel\International", values, "Configuration régionale"
+        )
+
+        # Fuseau horaire (machine).
+        code_tz, out_tz = run_cmd(["tzutil", "/s", self.TIMEZONE_ID], timeout=20)
+        if code_tz == 0:
+            self.log(f"Fuseau horaire : {self.TIMEZONE_ID}.", "OK")
+        else:
+            self.log(
+                f"Fuseau horaire — échec (code {code_tz}) : "
+                f"{(out_tz or '').strip()[:120]}", "WARN"
+            )
+
+        # Position géographique (machine) — influence unités et formats régionaux.
+        code_geo, _ = run_cmd(self._ps_encoded(
+            f"Set-WinHomeLocation -GeoId {self.GEO_ID_CANADA} -ErrorAction Stop"
+        ), timeout=30)
+        if code_geo == 0:
+            self.log("Position géographique : Canada.", "OK")
+        else:
+            self.log("Position géographique — non appliquée (non bloquant).", "WARN")
+
+        self.log(
+            "Régional : fr-CA, date yyyy-MM-dd, horloge 24 h "
+            "(effectif à la prochaine ouverture de session).", "OK"
+        )
 
     def _apply_screensaver_now(self, timeout_s: int = 600):
         """Applique l'écran de veille à la session en cours, sans attendre une
@@ -69067,6 +69137,9 @@ try {
 
         # Écran de veille — appliqué à TOUS les utilisateurs (pas la ruche admin).
         self._configure_screensaver()
+
+        # Configuration régionale : fr-CA, date ISO, horloge 24 h, fuseau.
+        self._configure_regional()
 
         # Désactivation démarrage rapide
         try:
@@ -69821,6 +69894,14 @@ try {
                     else:
                         self.log(f"Étape 4b — erreur inattendue : {exc}", "WARN")
 
+            # Vérification finale + fiche de remise, AVANT le nettoyage : la
+            # fiche doit refléter l'état du poste tel qu'il est livré.
+            try:
+                checks = self._final_verification()
+                self._write_handover_sheet(checks)
+            except Exception as exc:
+                self.log(f"Vérification finale — erreur : {exc}", "WARN")
+
             # Toutes les étapes terminées : nettoyage du dossier de déploiement.
             self._cleanup_deploy_folder()
         except InterruptedError as exc:
@@ -69860,6 +69941,221 @@ try {
                 self.log("Dossier de déploiement supprimé.", "OK")
         except Exception as exc:
             self.log(f"Nettoyage LGS_Deploy — erreur : {exc}", "WARN")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # VÉRIFICATION FINALE (self-test) + FICHE DE REMISE
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _final_verification(self) -> list:
+        """Contrôle l'état réel du poste en fin de provisionnement.
+
+        Ne modifie rien : chaque point est re-mesuré sur la machine plutôt que
+        déduit du déroulé du script — une étape peut « s'être bien passée » sans
+        que le résultat soit là (cas constaté avec winget qui retourne 0).
+
+        Retourne une liste de dicts {label, statut, detail} ; statut ∈
+        OK / FAIL / WARN / SKIP.
+        """
+        self.log("VÉRIFICATION FINALE", "SECTION")
+        checks = []
+
+        def add(label, statut, detail=""):
+            checks.append({"label": label, "statut": statut, "detail": detail})
+            niveau = {"OK": "OK", "FAIL": "FAIL", "WARN": "WARN", "SKIP": "SKIP"}[statut]
+            self.log(f"{label} — {detail or statut}", niveau)
+
+        # 1. Nom d'ordinateur
+        voulu = (self.machine_info.get("computer_name") or "").strip()
+        actuel = platform.node()
+        if not voulu:
+            add("Nom d'ordinateur", "SKIP", "aucun nom demandé")
+        elif voulu.upper() == actuel.upper():
+            add("Nom d'ordinateur", "OK", actuel)
+        else:
+            add("Nom d'ordinateur", "WARN",
+                f"« {actuel} » — « {voulu} » effectif après redémarrage")
+
+        # 2. Dossier et raccourci CAT
+        desktop = get_desktop()
+        add("Dossier CAT", "OK" if (desktop / "CAT").is_dir() else "FAIL",
+            str(desktop / "CAT"))
+        add("Raccourci CAT.lnk", "OK" if (desktop / "CAT.lnk").exists() else "FAIL", "")
+
+        # 3. Logiciels du catalogue
+        for cle, nom in (("office", "Microsoft 365 Apps"), ("firefox", "Firefox"),
+                         ("chrome", "Google Chrome"), ("slack", "Slack"),
+                         ("box_for_office", "Box for Office"), ("box_tools", "Box Tools"),
+                         ("adobe", "Adobe Acrobat Reader"), ("intel_dsa", "Intel DSA")):
+            entry = LOGICIELS[cle]
+            present = self._soft_present(entry)
+            if cle == "intel_dsa" and not present:
+                present = is_service_installed(entry.get("service_name", ""))
+            add(nom, "OK" if present else "FAIL", "installé" if present else "ABSENT")
+
+        # 4. Lenovo Commercial Vantage (uniquement sur matériel Lenovo)
+        _, fab = run_cmd(self._ps_encoded(
+            "Write-Output ('MFG=' + (Get-CimInstance Win32_ComputerSystem"
+            " -ErrorAction SilentlyContinue).Manufacturer)"), timeout=30)
+        est_lenovo = "lenovo" in (fab or "").lower()
+        if est_lenovo:
+            _, out_v = run_cmd(self._ps_encoded(
+                "if (Get-AppxPackage -Name '*Vantage*') { Write-Output 'YES' }"), timeout=45)
+            ok_v = "YES" in (out_v or "")
+            add("Lenovo Commercial Vantage", "OK" if ok_v else "FAIL",
+                "installé" if ok_v else "ABSENT — déposer le paquet de déploiement")
+        else:
+            add("Lenovo Commercial Vantage", "SKIP", "poste non-Lenovo")
+
+        # 5. BitLocker : chiffrement ET sauvegarde de la clé
+        _, out_bl = run_cmd(self._ps_encoded(
+            "$v = Get-BitLockerVolume -MountPoint 'C:' -ErrorAction SilentlyContinue\n"
+            "if ($v) { Write-Output ('BL=' + $v.ProtectionStatus + '|' + $v.EncryptionPercentage) }"
+        ), timeout=60)
+        m_bl = re.search(r"BL=(\w+)\|(\d+)", out_bl or "")
+        if m_bl:
+            protege = m_bl.group(1).lower() in ("on", "1")
+            add("BitLocker (C:)", "OK" if protege else "FAIL",
+                f"protection {m_bl.group(1)}, chiffré à {m_bl.group(2)} %")
+        else:
+            add("BitLocker (C:)", "FAIL", "état illisible")
+
+        # 6. Jonction Entra ID
+        _, out_dsr = run_cmd(["dsregcmd", "/status"], timeout=60)
+        joint = re.search(r"AzureAdJoined\s*:\s*YES", out_dsr or "", re.I)
+        add("Jonction Entra ID", "OK" if joint else "WARN",
+            "AzureAdJoined : YES" if joint else "non joint ou état illisible")
+
+        # 7. Écran de veille (ruche d'un utilisateur réel, pas celle de l'admin)
+        sids = self._loaded_user_sids()
+        ss_ok = False
+        for sid in sids:
+            try:
+                with winreg.OpenKey(winreg.HKEY_USERS,
+                                    sid + r"\Control Panel\Desktop") as k:
+                    if (winreg.QueryValueEx(k, "ScreenSaveTimeOut")[0] == "600"
+                            and winreg.QueryValueEx(k, "ScreenSaverIsSecure")[0] == "1"):
+                        ss_ok = True
+            except OSError:
+                continue
+        add("Écran de veille", "OK" if ss_ok else "WARN",
+            "10 min + verrouillage" if ss_ok else "non confirmé sur une ruche utilisateur")
+
+        # 8. Configuration régionale
+        reg_ok = False
+        for sid in sids:
+            try:
+                with winreg.OpenKey(winreg.HKEY_USERS,
+                                    sid + r"\Control Panel\International") as k:
+                    if winreg.QueryValueEx(k, "sShortDate")[0] == "yyyy-MM-dd":
+                        reg_ok = True
+            except OSError:
+                continue
+        add("Configuration régionale", "OK" if reg_ok else "WARN",
+            "fr-CA, date ISO, 24 h" if reg_ok else "non confirmée")
+
+        nb_fail = sum(1 for c in checks if c["statut"] == "FAIL")
+        nb_warn = sum(1 for c in checks if c["statut"] == "WARN")
+        if nb_fail:
+            self.log(f"Vérification : {nb_fail} point(s) en échec, "
+                     f"{nb_warn} avertissement(s).", "FAIL")
+        elif nb_warn:
+            self.log(f"Vérification : aucun échec, {nb_warn} avertissement(s).", "WARN")
+        else:
+            self.log("Vérification : tous les points sont conformes.", "OK")
+        return checks
+
+    HANDOVER_CSS = """
+body{font-family:Segoe UI,Arial,sans-serif;margin:0;padding:24px;background:#f4f6f8;color:#1b1f23}
+.wrap{max-width:900px;margin:0 auto;background:#fff;border-radius:8px;
+      box-shadow:0 1px 4px rgba(0,0,0,.12);overflow:hidden}
+header{background:#0f1a2b;color:#fff;padding:20px 28px}
+header h1{margin:0;font-size:20px;letter-spacing:.5px}
+header p{margin:4px 0 0;font-size:13px;opacity:.75}
+section{padding:20px 28px;border-top:1px solid #e6e9ed}
+h2{font-size:14px;text-transform:uppercase;letter-spacing:.8px;color:#5a6472;margin:0 0 12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:7px 10px;text-align:left;border-bottom:1px solid #eef1f4;vertical-align:top}
+th{width:34%;color:#5a6472;font-weight:600}
+.badge{display:inline-block;padding:2px 9px;border-radius:11px;font-size:11px;font-weight:700}
+.OK{background:#e3f6e8;color:#136b2e}.FAIL{background:#fde8e8;color:#9b1c1c}
+.WARN{background:#fdf3e0;color:#8a5a00}.SKIP{background:#eceff2;color:#5a6472}
+.sum{font-size:13px;margin:0 0 14px;padding:10px 14px;border-radius:6px}
+.sum.ok{background:#e3f6e8;color:#136b2e}.sum.ko{background:#fde8e8;color:#9b1c1c}
+.sum.wa{background:#fdf3e0;color:#8a5a00}
+footer{padding:14px 28px;font-size:11px;color:#8a94a0;background:#fafbfc}
+@media print{body{background:#fff;padding:0}.wrap{box-shadow:none}}
+"""
+
+    def _write_handover_sheet(self, checks: list) -> Path | None:
+        """Génère la fiche de remise HTML (inventaire + vérification finale).
+
+        Déposée sur le bureau à côté du journal. Sert de preuve de conformité
+        pour le technicien et d'enregistrement d'actif pour l'organisation.
+        Purement documentaire : un échec ici n'a aucun impact sur le poste.
+        """
+        try:
+            from html import escape
+
+            inv = self.inventory or {}
+            cn = self.machine_info.get("computer_name") or platform.node()
+            ts = datetime.now()
+
+            nb_fail = sum(1 for c in checks if c["statut"] == "FAIL")
+            nb_warn = sum(1 for c in checks if c["statut"] == "WARN")
+            if nb_fail:
+                cls, msg = "ko", f"{nb_fail} point(s) en échec, {nb_warn} avertissement(s) — à traiter avant remise."
+            elif nb_warn:
+                cls, msg = "wa", f"Aucun échec, {nb_warn} avertissement(s) à vérifier."
+            else:
+                cls, msg = "ok", "Tous les points de contrôle sont conformes."
+
+            def lignes(d):
+                return "".join(
+                    f"<tr><th>{escape(str(k))}</th><td>{escape(str(v))}</td></tr>"
+                    for k, v in d.items()
+                )
+
+            ident = {
+                "Nom du poste": cn,
+                "Provisionné le": ts.strftime("%Y-%m-%d %H:%M"),
+                "Technicien": os.environ.get("USERNAME", "inconnu"),
+                "Durée": f"{round((ts - self.start_time).total_seconds()/60, 1)} minutes",
+                "LGS InstalleX": f"v{INSTALLEX_VERSION}",
+            }
+
+            ctrl = "".join(
+                f'<tr><th>{escape(c["label"])}</th><td>'
+                f'<span class="badge {c["statut"]}">{c["statut"]}</span> '
+                f'{escape(c["detail"])}</td></tr>'
+                for c in checks
+            )
+
+            html = (
+                "<!DOCTYPE html><html lang=\"fr\"><head><meta charset=\"utf-8\">"
+                f"<title>Fiche de remise — {escape(cn)}</title>"
+                f"<style>{self.HANDOVER_CSS}</style></head><body><div class=\"wrap\">"
+                "<header><h1>Fiche de remise — poste de travail</h1>"
+                "<p>Groupe LGS, une société IBM — document généré automatiquement</p></header>"
+                f"<section><h2>Identification</h2><table>{lignes(ident)}</table></section>"
+                f"<section><h2>Vérification finale</h2>"
+                f"<p class=\"sum {cls}\">{escape(msg)}</p>"
+                f"<table>{ctrl}</table></section>"
+                + (f"<section><h2>Inventaire matériel</h2><table>{lignes(inv)}</table></section>"
+                   if inv else
+                   "<section><h2>Inventaire matériel</h2><p style=\"font-size:13px;color:#8a94a0\">"
+                   "Inventaire indisponible.</p></section>")
+                + f"<footer>LGS InstalleX v{INSTALLEX_VERSION} — "
+                  f"{ts.strftime('%Y-%m-%d %H:%M:%S')}</footer>"
+                "</div></body></html>"
+            )
+
+            dest = get_desktop() / f"Fiche_Remise_{cn}_{ts.strftime('%Y-%m-%d_%H-%M-%S')}.html"
+            dest.write_text(html, encoding="utf-8")
+            self.log(f"Fiche de remise créée : {dest.name}", "OK")
+            return dest
+        except Exception as exc:
+            self.log(f"Fiche de remise — non générée : {exc}", "WARN")
+            return None
 
     def _log_summary(self):
         """Affiche un récapitulatif des actions effectuées en fin d'installation."""
