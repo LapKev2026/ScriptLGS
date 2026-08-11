@@ -44,7 +44,9 @@ Deux implémentations fonctionnellement équivalentes sont maintenues en parall�
 - **Vérification de la signature Authenticode des installeurs téléchargés** (`Get-AuthenticodeSignature`) avant toute exécution en administrateur ; un binaire non signé, altéré ou non fiable est rejeté
 - Assets embarqués en Base64 (aucune dépendance réseau vers SharePoint / OneDrive)
 - Détection de langue ; détection matérielle robuste des GPU NVIDIA (par ID fabricant PCI `VEN_10DE`) avec installation du pilote et de NVIDIA App (Entreprise) ; automatisation Windows Update
-- **Inventaire matériel** du poste collecté et journalisé au démarrage (purement informatif, sans effet sur le provisionnement)
+- **Inventaire matériel** du poste collecté et journalisé au démarrage (sans effet sur le provisionnement), puis réutilisé dans la fiche de remise
+- **Configuration régionale** fr-CA : date ISO `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time, position géographique Canada
+- **Vérification finale** en 14 points qui remesure le poste réellement livré, et **fiche de remise HTML** déposée sur le bureau (identification, contrôles, inventaire)
 - Téléchargements résilients : contexte TLS enrichi des magasins de certificats Windows, avec repli sur `curl.exe` (Schannel)
 - Journal détaillé écrit directement sur le bureau, à l'endroit où le technicien le cherche
 - Nettoyage automatique du dossier de déploiement compagnon en fin d'exécution
@@ -76,10 +78,12 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 - **Installation applicative pilotée par les données** — le catalogue logiciel (`LOGICIELS`) décrit chaque application (chemins de détection, motifs registre, identifiant winget, URL et méthode de repli) ; l'étape 6 l'exploite pour uniformiser détection et installation. Un dossier compagnon `C:\LGS_Deploy` (`LGS_DEPLOY_DIR`, sous-dossiers `ODT\` et `CommercialVantage\`) héberge les paquets de déploiement entreprise : il est requis pour Lenovo Commercial Vantage, et sert de repli pour Microsoft 365 Apps.
 - **Microsoft 365 Apps — winget d'abord, ODT en repli** — le paquet winget `Microsoft.Office` est le *même* `setup.exe` Click-to-Run que l'ODT, simplement téléchargé depuis le CDN Microsoft. LGS InstalleX l'installe donc via winget en lui passant **son propre `configuration.xml`** (`--custom "/configure <xml>"`), ce qui conserve la maîtrise totale du déploiement (fr-CA, canal, RemoveMSI) tout en évitant d'avoir à pré-déposer `setup.exe` sur chaque poste. En cas d'échec (winget absent, CDN inaccessible, « installer hash mismatch » du manifeste), l'ODT prend le relais — et si `setup.exe` n'a pas été pré-déposé dans `C:\LGS_Deploy\ODT`, il est **téléchargé automatiquement depuis le CDN Microsoft** (`_download_odt_setup`). Le succès est vérifié par la présence réelle des binaires Office, car winget peut retourner `0` alors que Click-to-Run a échoué.
 - **Téléchargements résilients** — le helper `download_file` tente d'abord `urlopen` avec un contexte TLS construit à partir des magasins de certificats Windows (`ROOT` et `CA`, via `ssl.enum_certificates`), puis se replie sur `curl.exe` (intégré depuis Windows 10 1803), qui s'appuie sur Schannel. Ce double chemin évite les échecs de validation de certificat derrière un proxy d'inspection TLS d'entreprise.
-- **Inventaire matériel informatif** — `collect_inventory` / `log_inventory` interrogent CIM au démarrage et consignent la configuration du poste dans le journal. La collecte est volontairement non bloquante : elle ne lève jamais, et aucune décision d'installation n'en dépend.
+- **Inventaire matériel informatif** — `collect_inventory` / `log_inventory` interrogent CIM au démarrage et consignent la configuration du poste dans le journal. La collecte est volontairement non bloquante : elle ne lève jamais, et aucune décision d'installation n'en dépend. Le résultat alimente ensuite la fiche de remise.
+- **Écriture multi-ruches factorisée** — `_loaded_user_sids()` et `_write_all_user_hives()` sont partagés par l'écran de veille et la configuration régionale : la règle de sélection des ruches (dont les SID Entra ID) vit à un seul endroit, au lieu d'être dupliquée dans chaque fonctionnalité où elle pourrait diverger.
+- **Vérification finale par remesure** — `_final_verification()` ne se fie pas au déroulé du script : chaque point est relu sur la machine. C'est indispensable puisqu'une étape peut se dérouler sans erreur sans que le résultat soit là — winget retourne `0` alors que rien n'est installé. Les contrôles d'écran de veille et de configuration régionale lisent une **ruche utilisateur réelle**, jamais celle du compte élevé.
 - **Nettoyage en fin de course** — `_cleanup_deploy_folder` supprime `C:\LGS_Deploy` une fois le provisionnement terminé (best-effort : les fichiers verrouillés sont ignorés, l'attribut lecture seule est levé si besoin, et une erreur n'interrompt jamais le script).
 - **Journal sur le bureau** — le journal détaillé est écrit directement sur le bureau de l'opérateur. Une itération intermédiaire l'avait déplacé dans `%PROGRAMDATA%\LGS\Logs` avec des ACL restreintes ; en pratique cela imposait de passer par un raccourci pour le consulter, pour un gain opérationnel nul — le choix a donc été annulé.
-- **Configuration externalisée** — paramètres structurés en JSON, séparés de la logique, pour faciliter la maintenance sans toucher au code.
+- **Configuration externalisée** — *objectif non encore implémenté*. Les paramètres (catalogue `LOGICIELS`, page d'accueil, délai d'écran de veille, `configuration.xml` d'Office) sont aujourd'hui dans le code. Les externaliser dans un fichier lu au démarrage permettrait d'ajuster un déploiement sans toucher au script.
 
 ---
 
@@ -127,11 +131,29 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 
 > **Slack et la portée d'installation** — en portée machine, winget sert le paquet **MSIX** de Slack, provisionné pour tous les profils : c'est le comportement attendu en provisionnement, et la raison pour laquelle `--scope machine` est conservé. En portée utilisateur, Slack n'atterrirait que dans le profil du technicien. Conséquence importante pour la détection : un Slack installé en MSIX réside dans `C:\Program Files\WindowsApps` et n'expose **aucun** des chemins classiques — d'où la détection par registre et par nom de paquet Appx (`appx_name`).
 7. **Favoris Microsoft Edge** — écriture des favoris dans les profils + activation de la barre des favoris.
-8. **Configuration Windows** — écran de veille (Ribbons.scr, 10 min, verrouillage) écrit dans le profil par défaut et dans chaque ruche utilisateur chargée, **puis appliqué à la session en cours** via `SystemParametersInfoW` ; désactivation du démarrage rapide ; restauration des paramètres de veille sauvegardés.
+8. **Configuration Windows** — écran de veille (Ribbons.scr, 10 min, verrouillage) écrit dans le profil par défaut et dans chaque ruche utilisateur chargée, **puis appliqué à la session en cours** via `SystemParametersInfoW` ; **configuration régionale** (fr-CA, date `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time, position Canada) ; désactivation du démarrage rapide ; restauration des paramètres de veille sauvegardés.
 9. **Windows Update** — PSWindowsUpdate avec repli sur l'agent COM natif (WUA), après détection d'un éventuel redémarrage en attente. Le **service Microsoft Update** est enregistré pour couvrir les correctifs Office et les pilotes, et jusqu'à **3 passes** s'enchaînent tant que de nouvelles mises à jour apparaissent (arrêt immédiat si un redémarrage devient nécessaire).
 10. **BitLocker → Entra ID** (`dsregcmd`, `Get-Tpm`, `Enable-BitLocker` XTS-AES-256, `BackupToAAD-BitLockerKeyProtector`, confirmation via event 845 ; **la clé de récupération n'est jamais journalisée**).
 
-*En clôture* : récapitulatif des actions, détection d'un redémarrage requis, suppression du dossier de déploiement `C:\LGS_Deploy`, puis sauvegarde du journal sur le bureau.
+*En clôture* : **vérification finale** (14 points remesurés sur le poste) et génération de la **fiche de remise HTML** sur le bureau — les deux avant le nettoyage, pour que la fiche reflète le poste tel qu'il est livré — puis suppression du dossier de déploiement `C:\LGS_Deploy`, récapitulatif des actions, détection d'un redémarrage requis et sauvegarde du journal sur le bureau.
+
+**Vérification finale — points contrôlés**
+
+| Domaine | Contrôle |
+|---|---|
+| Identité | Nom d'ordinateur conforme à la demande |
+| Documentation | Dossier `CAT` et raccourci `CAT.lnk` sur le bureau |
+| Logiciels | Les 8 applications du catalogue, détectées par chemin + registre + MSIX |
+| Matériel Lenovo | Commercial Vantage (ignoré sur poste non-Lenovo) |
+| Chiffrement | BitLocker : état de protection et pourcentage chiffré |
+| Identité cloud | `dsregcmd` → `AzureAdJoined : YES` |
+| Poste | Écran de veille et configuration régionale, lus dans une ruche utilisateur réelle |
+
+Le résultat est journalisé point par point, puis résumé en trois issues : conforme, avertissements à vérifier, ou échecs à traiter avant remise.
+
+**Fiche de remise**
+
+Fichier `Fiche_Remise_<poste>_<horodatage>.html` déposé sur le bureau. Trois sections : identification (poste, date, technicien, durée, version de l'outil), résultats de la vérification avec pastilles de couleur, et inventaire matériel complet. Autonome (CSS embarqué, aucune dépendance réseau) et mis en page pour l'impression.
 
 > La barre de progression de la GUI est graduée sur 11 jalons (les 10 étapes numérotées ci-dessus + l'état « Installation terminée »). L'étape 4b n'occupe pas de rang numéroté distinct.
 
@@ -172,6 +194,8 @@ Les tests sont menés de façon itérative, sur postes réels, selon un cycle «
 - Contrôle de l'encodage (accents, émojis) sur Windows en français.
 - Vérification de la sauvegarde de la clé BitLocker dans Entra ID (event 845).
 - Tests de robustesse : coupure réseau, échec d'une étape, chemins avec espaces, session non-admin.
+
+Depuis l'ajout de la **vérification finale**, chaque exécution produit sa propre preuve : la fiche de remise HTML consigne l'état réel du poste en 14 points. Conserver ces fiches constitue le relevé de tests le plus fidèle, poste par poste.
 
 > **À compléter** — matrice de tests, environnements couverts (versions Windows, builds), et résultats détaillés à consigner ici au fur et à mesure.
 
