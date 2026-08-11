@@ -19,8 +19,8 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QFrame, QScrollArea, QFileDialog,
     QMessageBox, QProgressBar, QTextEdit
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData
-from PyQt6.QtGui import QFont, QColor, QPalette, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent
 
 
 # ─── Palette LGS ─────────────────────────────────────────────────────────────

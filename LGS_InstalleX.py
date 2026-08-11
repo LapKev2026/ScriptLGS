@@ -70005,7 +70005,8 @@ class SetupDialog(QWidget):
 
         # Validation NetBIOS : 1–15 caractères, lettres/chiffres/tirets uniquement.
         # Un nom vide est accepté (l'étape 4 ignorera alors le renommage).
-        if name and not re.fullmatch(r"[A-Za-z0-9\-]{1,15}", name):
+        # Doit rester STRICTEMENT identique à la regex de step4_computer_name.
+        if name and not re.fullmatch(r"[A-Za-z0-9-]{1,15}", name):
             QMessageBox.warning(
                 self,
                 "Nom invalide",
