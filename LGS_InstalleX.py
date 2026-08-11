@@ -119,6 +119,74 @@ def download_file(url: str, dest: Path, timeout: int = 300) -> tuple[bool, str]:
         return False, f"{err} | curl: {(out or '').strip()[:200]}"
     return False, "fichier vide"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION EXTERNE (facultative)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Permet d'ajuster un déploiement sans toucher au script. Entièrement optionnelle :
+# en l'absence de fichier — ou s'il est illisible — les valeurs par défaut
+# ci-dessous s'appliquent et le provisionnement se déroule normalement.
+#
+# Format JSON et NON YAML : json fait partie de la bibliothèque standard, alors
+# que PyYAML serait une dépendance tierce supplémentaire. Le script n'en a
+# actuellement qu'une seule (PyQt6), ce qui simplifie la revue de licences.
+#
+# Exemple de LGS_InstalleX.config.json :
+#   {
+#     "computer_name": "LGSPC-00123",
+#     "nouvelle_embauche": false,
+#     "homepage": "https://www.lgs.com",
+#     "screensaver_timeout": 600,
+#     "timezone": "Eastern Standard Time",
+#     "locale": "fr-CA",
+#     "short_date": "yyyy-MM-dd"
+#   }
+CONFIG_FILENAME = "LGS_InstalleX.config.json"
+
+CONFIG_DEFAULTS = {
+    "computer_name":       "",
+    "nouvelle_embauche":   False,
+    "homepage":            "https://www.lgs.com",
+    "screensaver_timeout": 600,
+    "timezone":            "Eastern Standard Time",
+    "locale":              "fr-CA",
+    "short_date":          "yyyy-MM-dd",
+}
+
+
+def load_config() -> tuple[dict, str]:
+    """Charge la configuration externe. Retourne (config, origine).
+
+    Cherche le fichier à côté du script puis dans C:\\LGS_Deploy. Les clés
+    inconnues sont ignorées et les clés absentes gardent leur valeur par défaut,
+    pour qu'un fichier partiel ou vieilli ne casse jamais le provisionnement.
+    """
+    cfg = dict(CONFIG_DEFAULTS)
+    candidats = []
+    try:
+        candidats.append(Path(os.path.abspath(sys.argv[0])).parent / CONFIG_FILENAME)
+    except Exception:
+        pass
+    candidats.append(Path(r"C:\LGS_Deploy") / CONFIG_FILENAME)
+
+    for p in candidats:
+        try:
+            if not p.is_file():
+                continue
+            data = json.loads(p.read_text(encoding="utf-8-sig"))
+            if not isinstance(data, dict):
+                return cfg, f"{p.name} ignoré (racine JSON non objet)"
+            retenues = {k: v for k, v in data.items() if k in CONFIG_DEFAULTS}
+            cfg.update(retenues)
+            ignorees = set(data) - set(CONFIG_DEFAULTS)
+            note = f" ({len(ignorees)} clé(s) inconnue(s) ignorée(s))" if ignorees else ""
+            return cfg, f"{p}{note}"
+        except Exception as exc:
+            return cfg, f"{p.name} illisible ({exc}) — valeurs par défaut"
+    return cfg, "aucun fichier — valeurs par défaut"
+
+
+CONFIG, CONFIG_ORIGINE = load_config()
+
 # Dossier unique de dépôt des paquets de déploiement compagnons (ODT, Vantage…).
 # Sous-dossiers attendus : ODT\  et  CommercialVantage\
 LGS_DEPLOY_DIR = Path(r"C:\LGS_Deploy")
@@ -67111,7 +67179,8 @@ class InstallWorker(QThread):
             f"Utilisateur      : {os.environ.get('USERNAME', 'Inconnu')}\n"
             f"Windows          : {version} (Build {build})\n"
             f"Python           : {sys.version.split()[0]}\n"
-            f"LGS InstalleX    : v{INSTALLEX_VERSION}\n\n"
+            f"LGS InstalleX    : v{INSTALLEX_VERSION}\n"
+            f"Configuration    : {CONFIG_ORIGINE}\n\n"
             "Légende : ✅ OK | ❌ FAIL | ⚠️ WARN | ⏭️ SKIP | ℹ️ INFO | ↳ CMD\n"
             "══════════════════════════════════════════════════════════════════\n\n"
         )
@@ -68024,7 +68093,7 @@ try {
 
         # ── Pages d'accueil www.lgs.com ───────────────────────────────────────
         self.log("Configuration page d'accueil www.lgs.com...", "INFO")
-        homepage = "https://www.lgs.com"
+        homepage = CONFIG.get("homepage") or "https://www.lgs.com"
         homepage_keys = [
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome",
              "HomepageLocation",    homepage,    winreg.REG_SZ),
@@ -69018,23 +69087,28 @@ try {
     def _configure_screensaver(self):
         """Configure l'écran de veille (Ribbons, 10 min, verrouillage) pour TOUS
         les utilisateurs — pas seulement le compte admin élevé."""
+        timeout_s = int(CONFIG.get("screensaver_timeout") or 600)
         values = {
             "ScreenSaveActive":    "1",
             "SCRNSAVE.EXE":        r"C:\Windows\System32\Ribbons.scr",
-            "ScreenSaveTimeOut":   "600",   # 10 min (en secondes)
-            "ScreenSaverIsSecure": "1",     # verrouillage à la reprise
+            "ScreenSaveTimeOut":   str(timeout_s),   # 10 min par défaut
+            "ScreenSaverIsSecure": "1",              # verrouillage à la reprise
         }
         applied = self._write_all_user_hives(
             r"Control Panel\Desktop", values, "Écran de veille"
         )
         if applied:
-            self.log("Écran de veille : Ribbons.scr, 10 min, verrouillage activé.", "OK")
+            self.log(
+                f"Écran de veille : Ribbons.scr, {timeout_s // 60} min, "
+                "verrouillage activé.", "OK"
+            )
 
         # Appliquer à la session OUVERTE (voir _apply_screensaver_now).
         self._apply_screensaver_now(int(values["ScreenSaveTimeOut"]))
 
     # Fuseau des postes LGS (Québec). Nom d'ID Windows, invariant de la langue.
-    TIMEZONE_ID = "Eastern Standard Time"
+    # Surchargeable par la configuration externe (clé « timezone »).
+    TIMEZONE_ID = CONFIG.get("timezone") or "Eastern Standard Time"
     GEO_ID_CANADA = 39          # Set-WinHomeLocation : code géographique Canada
 
     def _configure_regional(self):
@@ -69050,8 +69124,8 @@ try {
         self.log("CONFIGURATION RÉGIONALE", "SECTION")
 
         values = {
-            "LocaleName":   "fr-CA",
-            "sShortDate":   "yyyy-MM-dd",     # format ISO 8601
+            "LocaleName":   CONFIG.get("locale") or "fr-CA",
+            "sShortDate":   CONFIG.get("short_date") or "yyyy-MM-dd",  # ISO 8601
             "sLongDate":    "d MMMM yyyy",
             "sShortTime":   "HH:mm",          # 24 h
             "sTimeFormat":  "HH:mm:ss",
@@ -70252,10 +70326,13 @@ class SetupDialog(QWidget):
 
         self.txt_name = QLineEdit()
         self.txt_name.setPlaceholderText("ex: LGSPC-00123")
-        self.txt_name.setText(platform.node())
+        # Pré-remplissage par la configuration externe si elle fournit un nom,
+        # sinon nom actuel du poste. Le champ reste modifiable dans tous les cas.
+        self.txt_name.setText(CONFIG.get("computer_name") or platform.node())
         form.addRow("Nouveau nom d'ordinateur :", self.txt_name)
 
         self.chk_nouvelle_embauche = QCheckBox("Nouvelle embauche")
+        self.chk_nouvelle_embauche.setChecked(bool(CONFIG.get("nouvelle_embauche")))
         form.addRow("", self.chk_nouvelle_embauche)
 
         layout.addLayout(form)
