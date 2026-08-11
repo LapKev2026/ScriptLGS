@@ -68974,7 +68974,18 @@ try {
             else:
                 self.log("Écran de veille — profil par défaut non chargeable.", "WARN")
 
-        # 2. Ruches utilisateurs réelles déjà chargées (HKU\S-1-5-21-*).
+        # 2. Ruches utilisateurs réelles déjà chargées.
+        #
+        # ATTENTION — le filtre ne peut pas se limiter à « S-1-5-21- » :
+        #   S-1-5-21-…  comptes locaux et Active Directory
+        #   S-1-12-1-…  comptes ENTRA ID (Azure AD)
+        # Or ce script joint lui-même les postes à Entra ID : sur ces machines,
+        # l'utilisateur final porte un SID S-1-12-1-… et n'était donc JAMAIS
+        # traité. Seul le profil par défaut recevait le réglage, ce qui ne
+        # couvre pas un profil déjà créé.
+        # Les SID de services (S-1-5-18/19/20, S-1-5-80-…) et .DEFAULT sont
+        # volontairement exclus : ce ne sont pas des sessions utilisateur.
+        USER_SID_RE = re.compile(r"^S-1-(?:5-21|12-1)-[\d-]+$")
         try:
             sids, i = [], 0
             while True:
@@ -68983,13 +68994,19 @@ try {
                 except OSError:
                     break
                 i += 1
-                if sub.startswith("S-1-5-21-") and not sub.endswith("_Classes"):
+                if USER_SID_RE.match(sub):
                     sids.append(sub)
             for sid in sids:
                 if _write(sid):
                     applied += 1
+                    self.log(f"Écran de veille appliqué à la ruche {sid}", "CMD")
             if sids:
                 self.log(f"Écran de veille appliqué à {len(sids)} session(s) utilisateur.", "OK")
+            else:
+                self.log(
+                    "Écran de veille — aucune ruche utilisateur chargée ; seul le "
+                    "profil par défaut est configuré.", "WARN"
+                )
         except Exception as exc:
             self.log(f"Écran de veille (ruches chargées) : {exc}", "WARN")
 
