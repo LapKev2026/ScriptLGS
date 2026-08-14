@@ -69240,10 +69240,32 @@ try {
         self.step(9, "active", "Recherche des mises à jour...")
         self.log("WINDOWS UPDATE", "SECTION")
 
-        # ── Détection redémarrage requis AVANT toute tentative d'update ───────
-        # Si Windows a des mises à jour en attente de redémarrage, PSWindowsUpdate
-        # et WUA refusent d'installer de nouvelles MAJ et retournent une erreur
-        # sans message clair. On détecte ce cas explicitement ici.
+        # ── Redémarrage en attente : on le SIGNALE mais on tente quand même ───
+        #
+        # Historique : cette détection provoquait un `return` immédiat, donc un
+        # abandon pur et simple de Windows Update. C'était contre-productif pour
+        # deux raisons.
+        #
+        # 1) La condition est très largement AUTO-INFLIGÉE. L'étape 9 s'exécute
+        #    après l'installation d'Office (étape 5), des logiciels et pilotes
+        #    (étape 6) et de la configuration Windows (étape 8) — or ces
+        #    installations posent précisément un redémarrage en attente. Le code
+        #    accepte d'ailleurs 3010 comme succès, et 3010 signifie « succès,
+        #    redémarrage requis ». Le script créait donc lui-même la condition
+        #    qui le faisait renoncer, et Windows Update ne tournait quasiment
+        #    jamais. (Mesuré sur un poste provisionné : 3 des 4 indicateurs
+        #    étaient présents.)
+        #
+        # 2) La prémisse est trop stricte. Un redémarrage en attente ne bloque
+        #    pas Windows Update en général — seulement certaines opérations de
+        #    servicing. PendingFileRenameOperations en particulier est posé par
+        #    quasiment tous les installeurs et ne bloque pratiquement jamais.
+        #
+        # On journalise donc l'état, on mémorise le besoin de redémarrage pour le
+        # bilan final, et on TENTE la mise à jour. Si Windows la refuse vraiment,
+        # le traitement d'erreur plus bas (PSWU_FAIL contenant « reboot » /
+        # « restart » / « pending ») intercepte le cas et sort proprement : au
+        # pire on retombe sur le comportement précédent, après un essai.
         reboot_pending_keys = [
             (winreg.HKEY_LOCAL_MACHINE,
              r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"),
@@ -69281,16 +69303,9 @@ try {
             # annonçait « aucun redémarrage nécessaire » malgré ce constat.
             self._reboot_pending_seen = True
             self.log(
-                "⚠️  REDÉMARRAGE EN ATTENTE détecté — Windows Update ne peut pas "
-                "installer de nouvelles mises à jour tant que la machine n'a pas redémarré.", "WARN"
+                "Redémarrage en attente détecté (probablement dû aux installations "
+                "des étapes précédentes). Windows Update est tenté malgré tout.", "WARN"
             )
-            self.log(
-                "Les mises à jour seront appliquées automatiquement au prochain redémarrage. "
-                "Redémarrez manuellement après la fin du script si nécessaire.", "WARN"
-            )
-            self.step(9, "done", "⚠️ Redémarrage requis — MAJ au prochain boot")
-            self.progress(10, "Étape 10/11 — BitLocker + Entra ID")
-            return
 
         # Méthode 1 : PSWindowsUpdate via PowerShell (UTF-8 forcé via chcp)
         ps_script = r"""
