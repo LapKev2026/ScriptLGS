@@ -69383,9 +69383,16 @@ try {
             else { Write-Host "DONE: $total mise(s) a jour installee(s)" }
             break
         }
-        $res | ForEach-Object { Write-Host "UPDATE: $($_.Title)" }
-        $total += $res.Count
-        Write-Host "INFO: Passe $pass - $($res.Count) mise(s) a jour posee(s)"
+        # Get-WindowsUpdate -Install emet un objet par mise a jour ET PAR ETAPE
+        # (recherche, telechargement, installation), et une meme mise a jour peut
+        # etre proposee par plusieurs services depuis qu'on enregistre Microsoft
+        # Update. Sans dedoublonnage, un poste avec 23 mises a jour en annoncait
+        # 75 et les listait trois fois. On compte donc des TITRES DISTINCTS.
+        $titres = @($res | ForEach-Object { $_.Title } |
+                    Where-Object { $_ } | Select-Object -Unique)
+        $titres | ForEach-Object { Write-Host "UPDATE: $_" }
+        $total += $titres.Count
+        Write-Host "INFO: Passe $pass - $($titres.Count) mise(s) a jour posee(s)"
         $needReboot = $false
         try { $needReboot = [bool](Get-WURebootStatus -Silent) } catch { }
         if ($needReboot) {
@@ -69435,11 +69442,18 @@ try {
             self.progress(10, "Étape 10/11 — BitLocker + Entra ID")
             return
 
+        # Filet de sécurité : même dédoublonné côté PowerShell, on ne journalise
+        # jamais deux fois le même titre.
+        titres_vus = set()
         pswu_failed = False
         for line in out.splitlines():
             line = line.strip()
             if line.startswith("UPDATE:"):
-                self.log(f"Mise à jour : {line[7:].strip()}", "INFO")
+                titre = line[7:].strip()
+                if titre in titres_vus:
+                    continue
+                titres_vus.add(titre)
+                self.log(f"Mise à jour : {titre}", "INFO")
             elif line.startswith("INFO:"):
                 self.log(line[5:].strip(), "INFO")
             elif line.startswith("REBOOT:"):
@@ -69495,8 +69509,15 @@ try {
             else { Write-Host "DONE: $total mise(s) a jour installee(s) (WUA)" }
             break
         }
+        # Un titre n'est journalise qu'une fois (cf. dedoublonnage cote
+        # PSWindowsUpdate), mais AcceptEula est appele sur CHAQUE objet : ce sont
+        # des mises a jour distinctes, meme si leur libelle est identique.
+        $vus = @{}
         foreach ($u in $result.Updates) {
-            Write-Host "UPDATE: $($u.Title)"
+            if (-not $vus.ContainsKey($u.Title)) {
+                $vus[$u.Title] = $true
+                Write-Host "UPDATE: $($u.Title)"
+            }
             # Accepter le CLUF : sans cela toute MAJ qui en exige un echoue
             # silencieusement (l'ancien code ne le faisait jamais).
             if (-not $u.EulaAccepted) { try { $u.AcceptEula() } catch { } }
@@ -69553,7 +69574,11 @@ try {
             for line in out2.splitlines():
                 line = line.strip()
                 if line.startswith("UPDATE:"):
-                    self.log(f"Mise à jour : {line[7:].strip()}", "INFO")
+                    titre = line[7:].strip()
+                    if titre in titres_vus:
+                        continue
+                    titres_vus.add(titre)
+                    self.log(f"Mise à jour : {titre}", "INFO")
                 elif line.startswith("INFO:"):
                     self.log(line[5:].strip(), "INFO")
                 elif line.startswith("RESULT:"):
