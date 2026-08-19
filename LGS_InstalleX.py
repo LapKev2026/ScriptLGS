@@ -67028,6 +67028,14 @@ def winget_exit_desc(code: int) -> tuple[str, str]:
         -1978334948:  ("FAIL", "Dépendance manquante"),
         -1978334947:  ("FAIL", "Impossible de désinstaller la version précédente"),
         -1978334946:  ("FAIL", "Conflit avec un package existant"),
+        # ── Erreurs de source ─────────────────────────────────────────────────
+        # 0x8A15005E : winget épingle le certificat de ses sources. Derrière un
+        # proxy à inspection SSL (cas LGS/IBM), le certificat présenté n'est pas
+        # celui attendu et la source refuse de s'ouvrir — instantanément. Touche
+        # surtout « msstore ». Sans cette entrée, le journal affichait seulement
+        # « Code HRESULT inconnu », ce qui masquait une cause pourtant connue.
+        -1978335138:  ("FAIL", "Source injoignable — épinglage de certificat "
+                               "(proxy à inspection SSL)"),
         # ── Erreurs de manifeste / applicabilité ──────────────────────────────
         -1978335216:  ("FAIL", "Aucun installeur applicable à ce système "
                                "(architecture, portée ou version Windows)"),
@@ -68143,6 +68151,14 @@ try {
             # portée machine sert le MSIX, refusé par les images où le
             # déploiement AppX est restreint (-1978334957).
             ok = self._winget_install(sl["winget_id"], "Slack", scope=None)
+            # Slack s'enregistre avec un léger décalage après la fin de winget :
+            # la vérification immédiate le déclarait « introuvable » alors que la
+            # vérification finale, elle, le trouvait bien. On laisse jusqu'à 30 s.
+            for _ in range(6):
+                if self._soft_present(sl):
+                    break
+                time.sleep(5)
+
             if self._soft_present(sl):
                 # Distinguer MSIX (tous profils) et .exe (profil courant seul) :
                 # dans le 2e cas l'utilisateur final devra installer Slack lui-même.
@@ -70100,11 +70116,13 @@ try {
             add("Nom d'ordinateur", "WARN",
                 f"« {actuel} » — « {voulu} » effectif après redémarrage")
 
-        # 2. Dossier et raccourci CAT
+        # 2. Dossier CAT. Pas de contrôle du raccourci CAT.lnk : step3_shortcuts
+        # ne le crée plus (il doublonnait l'icône du dossier, posé sur le même
+        # bureau) et le SUPPRIME au contraire. Le vérifier produisait donc un
+        # échec systématique sur la fiche de remise.
         desktop = get_desktop()
         add("Dossier CAT", "OK" if (desktop / "CAT").is_dir() else "FAIL",
             str(desktop / "CAT"))
-        add("Raccourci CAT.lnk", "OK" if (desktop / "CAT.lnk").exists() else "FAIL", "")
 
         # 3. Logiciels du catalogue
         for cle, nom in (("office", "Microsoft 365 Apps"), ("firefox", "Firefox"),
@@ -70134,13 +70152,23 @@ try {
         # 5. BitLocker : chiffrement ET sauvegarde de la clé
         _, out_bl = run_cmd(self._ps_encoded(
             "$v = Get-BitLockerVolume -MountPoint 'C:' -ErrorAction SilentlyContinue\n"
-            "if ($v) { Write-Output ('BL=' + $v.ProtectionStatus + '|' + $v.EncryptionPercentage) }"
+            "if ($v) { Write-Output ('BL=' + $v.ProtectionStatus + '|' +"
+            " $v.EncryptionPercentage + '|' + $v.VolumeStatus) }"
         ), timeout=60)
-        m_bl = re.search(r"BL=(\w+)\|(\d+)", out_bl or "")
+        m_bl = re.search(r"BL=(\w+)\|(\d+)\|(\w*)", out_bl or "")
         if m_bl:
-            protege = m_bl.group(1).lower() in ("on", "1")
-            add("BitLocker (C:)", "OK" if protege else "FAIL",
-                f"protection {m_bl.group(1)}, chiffré à {m_bl.group(2)} %")
+            etat, pct, volstat = m_bl.group(1), int(m_bl.group(2)), m_bl.group(3)
+            protege = etat.lower() in ("on", "1")
+            detail = f"protection {etat}, chiffré à {pct} %"
+            if protege:
+                add("BitLocker (C:)", "OK", detail)
+            elif "inprogress" in volstat.lower() or 0 < pct < 100:
+                # Tant que le chiffrement tourne, ProtectionStatus reste Off :
+                # ce n'est pas un échec, la protection s'activera à la fin.
+                add("BitLocker (C:)", "WARN",
+                    f"chiffrement en cours ({pct} %) — protection active à la fin")
+            else:
+                add("BitLocker (C:)", "FAIL", detail)
         else:
             add("BitLocker (C:)", "FAIL", "état illisible")
 
