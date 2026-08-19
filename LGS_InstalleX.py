@@ -67849,13 +67849,15 @@ try {
         if not self._winget_ok:
             return False
         self.log(f"{name} — tentative via le Microsoft Store ({store_id})...", "CMD")
+        # Pas de --scope : les paquets Store sont des MSIX et gèrent eux-mêmes
+        # leur portée. L'imposer faisait échouer l'installation, exactement comme
+        # pour Slack (-1978334957, « paquet non supporté par ce système »).
         code, out = run_cmd([
             "winget", "install", "--id", store_id,
             "--exact",
             "--source", "msstore",
             "--accept-package-agreements",
             "--accept-source-agreements",
-            "--scope", "machine",
         ], timeout=900)
         if code in (0, 3010, 1641):
             return True
@@ -68137,12 +68139,18 @@ try {
             # système »). _winget_install rebascule alors automatiquement sans
             # --scope, ce qui donne le SlackSetup.exe : Slack est bien installé,
             # mais pour le SEUL profil courant — d'où l'avertissement ci-dessous.
-            ok = self._winget_install(sl["winget_id"], "Slack")
+            # scope=None : on laisse winget choisir l'installeur. Imposer la
+            # portée machine sert le MSIX, refusé par les images où le
+            # déploiement AppX est restreint (-1978334957).
+            ok = self._winget_install(sl["winget_id"], "Slack", scope=None)
             if self._soft_present(sl):
                 # Distinguer MSIX (tous profils) et .exe (profil courant seul) :
                 # dans le 2e cas l'utilisateur final devra installer Slack lui-même.
-                msix = any(Path(p).exists() for p in sl["paths"])
-                if msix:
+                # Les chemins classiques (%LOCALAPPDATA%\slack…) ne sont posés que
+                # par l'installeur .exe : un MSIX vit dans WindowsApps et n'en
+                # expose aucun. Leur présence signale donc l'installation .exe.
+                install_exe = any(Path(p).exists() for p in sl["paths"])
+                if install_exe:
                     self.log(
                         "Slack installé, mais via l'installeur .exe : présent "
                         "UNIQUEMENT pour la session courante. L'utilisateur final "
@@ -68181,7 +68189,9 @@ try {
         if self._soft_present(bt):
             self.log("Box Tools déjà installé.", "SKIP")
         else:
-            ok = self._winget_install(bt["winget_id"], "Box Tools")
+            # scope=None : Box Tools s'installe par utilisateur ; imposer la
+            # portée machine faisait échouer winget faute d'installeur applicable.
+            ok = self._winget_install(bt["winget_id"], "Box Tools", scope=None)
             if ok and not self._soft_present(bt):
                 self.log("Box Tools — winget signale un succès mais rien d'installé.", "WARN")
                 ok = False
@@ -69236,9 +69246,18 @@ try {
     # ÉTAPE 9 — Windows Update
     # ─────────────────────────────────────────────────────────────────────────
 
+    # Budget de temps accordé à Windows Update, en secondes. Passé ce délai on
+    # passe à l'étape suivante : les mises à jour restantes se poseront d'elles-
+    # mêmes après la remise du poste, alors qu'un technicien immobilisé une ou
+    # deux heures devant la barre de progression, non. Le budget couvre l'étape
+    # ENTIÈRE : ce qui reste après PSWindowsUpdate est ce dont dispose le repli
+    # WUA, pour que le total ne dérive pas.
+    WU_BUDGET_S = 600   # 10 minutes
+
     def step9_windows_update(self):
         self.step(9, "active", "Recherche des mises à jour...")
         self.log("WINDOWS UPDATE", "SECTION")
+        wu_debut = time.monotonic()
 
         # ── Redémarrage en attente : on le SIGNALE mais on tente quand même ───
         #
@@ -69383,9 +69402,22 @@ try {
         code, out = run_cmd([
             "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
             "-Command", "$OutputEncoding=[System.Text.Encoding]::UTF8; " + ps_script
-        ], timeout=7200)
+        ], timeout=self.WU_BUDGET_S)
 
         _wupdate_stop.set()
+
+        # Budget épuisé : on n'enchaîne pas sur le repli WUA, on passe à la suite.
+        # run_cmd renvoie -1 et un message « Délai dépassé » lorsqu'il tue le
+        # processus au timeout.
+        if code == -1 and "Délai dépassé" in (out or ""):
+            self.log(
+                f"Windows Update — délai de {self.WU_BUDGET_S // 60} min atteint ; "
+                "les mises à jour restantes se poursuivront en arrière-plan après "
+                "la remise du poste.", "WARN"
+            )
+            self.step(9, "done", f"Interrompu après {self.WU_BUDGET_S // 60} min")
+            self.progress(10, "Étape 10/11 — BitLocker + Entra ID")
+            return
 
         pswu_failed = False
         for line in out.splitlines():
@@ -69479,10 +69511,14 @@ try {
             _hb2 = threading.Thread(target=_heartbeat_wua, daemon=True)
             _hb2.start()
 
+            # Le repli n'obtient que ce qui reste du budget de l'étape, avec un
+            # plancher de 60 s pour lui laisser au moins le temps de démarrer.
+            reste = max(60, int(self.WU_BUDGET_S - (time.monotonic() - wu_debut)))
+            self.log(f"Repli WUA — {reste // 60} min restantes sur le budget.", "INFO")
             code2, out2 = run_cmd([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
                 "-Command", wua_script
-            ], timeout=7200)
+            ], timeout=reste)
 
             _wua_stop.set()
 
