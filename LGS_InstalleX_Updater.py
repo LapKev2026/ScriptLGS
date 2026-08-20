@@ -164,15 +164,92 @@ class FileCard(QFrame):
         """)
 
 
+# ─── Carte d'un fichier DÉJÀ embarqué dans le script ──────────────────────────
+class EmbeddedCard(QFrame):
+    """Ligne représentant un fichier présent dans FICHIERS_EMBARQUES.
+
+    Permet de le marquer pour suppression, et de revenir sur ce choix tant que
+    la mise à jour n'est pas appliquée : rien n'est écrit avant le bouton
+    « Appliquer ».
+    """
+    toggled = pyqtSignal(str)   # nom du fichier
+
+    def __init__(self, name: str, size: int, marked: bool, parent=None):
+        super().__init__(parent)
+        self.name = name
+        self.size = size
+        self.marked = marked
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+
+        if self.size >= 1024 * 1024:
+            taille = f"{self.size / 1024 / 1024:.2f} Mo"
+        elif self.size >= 1024:
+            taille = f"{self.size / 1024:.0f} Ko"
+        else:
+            taille = f"{self.size} o"
+
+        nom = f"<s>{self.name}</s>" if self.marked else f"<b>{self.name}</b>"
+        name_lbl = QLabel(nom)
+        name_lbl.setFont(QFont("Segoe UI", 10))
+        name_lbl.setStyleSheet(f"color: {RED if self.marked else TEXT};")
+
+        etat = "✕ sera SUPPRIMÉ du script" if self.marked else f"embarqué — {taille}"
+        status_lbl = QLabel(etat)
+        status_lbl.setStyleSheet(
+            f"color: {RED if self.marked else MUTED}; font-size: 9pt;"
+        )
+
+        info_col = QVBoxLayout()
+        info_col.setSpacing(2)
+        info_col.addWidget(name_lbl)
+        info_col.addWidget(status_lbl)
+
+        btn = QPushButton("↩" if self.marked else "🗑")
+        btn.setFixedSize(28, 28)
+        btn.setToolTip("Annuler la suppression" if self.marked
+                       else "Marquer ce fichier pour suppression")
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {GREEN if self.marked else MUTED};
+                border: none;
+                font-size: 13px;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                color: {GREEN if self.marked else RED};
+                background: rgba(239,68,68,0.15);
+            }}
+        """)
+        btn.clicked.connect(lambda: self.toggled.emit(self.name))
+
+        layout.addLayout(info_col, stretch=1)
+        layout.addWidget(btn)
+
+        self.setStyleSheet(f"""
+            EmbeddedCard {{
+                background: {DARK_BG};
+                border: 1px solid {RED if self.marked else BORDER};
+                border-radius: 8px;
+            }}
+        """)
+
+
 # ─── Thread de mise à jour ────────────────────────────────────────────────────
 class UpdateWorker(QThread):
     progress   = pyqtSignal(int, str)   # (pourcentage, message)
     finished   = pyqtSignal(bool, str)  # (succès, message_final)
 
-    def __init__(self, script_path: str, new_files: list[str]):
+    def __init__(self, script_path: str, new_files: list[str],
+                 to_delete: list[str] | None = None):
         super().__init__()
         self.script_path = script_path
         self.new_files   = new_files
+        self.to_delete   = list(to_delete or [])
 
     def run(self):
         try:
@@ -223,6 +300,13 @@ class UpdateWorker(QThread):
         for m in key_pattern.finditer(existing_block):
             existing_entries[m.group(1)] = m.group(2)
 
+        # Supprimer les fichiers marqués. Fait AVANT l'ajout : si un même nom est
+        # à la fois marqué et redéposé, le nouveau fichier doit gagner.
+        supprimes = []
+        for name in self.to_delete:
+            if existing_entries.pop(name, None) is not None:
+                supprimes.append(name)
+
         # Mettre à jour / ajouter
         for name, chunks in entries.items():
             existing_entries[name] = "\n".join(f'        "{c}"' for c in chunks)
@@ -255,7 +339,10 @@ class UpdateWorker(QThread):
             lines.append(f"✔ Mis à jour ({len(updated)}) : " + ", ".join(updated))
         if added:
             lines.append(f"+ Ajoutés   ({len(added)}) : " + ", ".join(added))
-        lines.append(f"\nBackup créé : {backup_path.name}")
+        if supprimes:
+            lines.append(f"✕ Supprimés ({len(supprimes)}) : " + ", ".join(supprimes))
+        lines.append(f"\n{len(existing_entries)} fichier(s) embarqué(s) au total.")
+        lines.append(f"Backup créé : {backup_path.name}")
         self.finished.emit(True, "\n".join(lines))
 
 
@@ -268,6 +355,8 @@ class InstalleXUpdater(QMainWindow):
         self.pending_files: dict[str, bool] = {}   # chemin → is_known
         self.script_path: str = ""
         self.existing_keys: set[str] = set()
+        self.embedded: dict[str, int] = {}   # nom → taille décodée
+        self.to_delete: set[str] = set()     # marqués pour suppression
         self._build_ui()
         self._apply_theme()
 
@@ -303,6 +392,29 @@ class InstalleXUpdater(QMainWindow):
         script_row.addWidget(self.script_lbl, stretch=1)
         script_row.addWidget(choose_btn)
         root.addLayout(script_row)
+
+        # ── Fichiers déjà embarqués dans le script ────────────────────────────
+        self.emb_lbl = QLabel("Fichiers actuellement embarqués")
+        self.emb_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.emb_lbl.setStyleSheet(f"color: {TEXT};")
+        root.addWidget(self.emb_lbl)
+
+        self.emb_scroll = QScrollArea()
+        self.emb_scroll.setWidgetResizable(True)
+        self.emb_scroll.setMinimumHeight(150)
+        self.emb_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.emb_widget = QWidget()
+        self.emb_layout = QVBoxLayout(self.emb_widget)
+        self.emb_layout.setContentsMargins(0, 0, 0, 0)
+        self.emb_layout.setSpacing(6)
+        self.emb_layout.addStretch()
+        self.emb_scroll.setWidget(self.emb_widget)
+        root.addWidget(self.emb_scroll)
+
+        self.emb_empty = QLabel("Choisissez un script pour voir les fichiers embarqués")
+        self.emb_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.emb_empty.setStyleSheet(f"color: {MUTED}; font-size: 9pt;")
+        root.addWidget(self.emb_empty)
 
         # ── Zone de drop ──────────────────────────────────────────────────────
         drop_lbl = QLabel("Nouveaux fichiers à embarquer")
@@ -471,8 +583,52 @@ class InstalleXUpdater(QMainWindow):
         end   = content.find(MARKER_END, start)
         block = content[start:end + 1]
         self.existing_keys = set(re.findall(r'"([^"]+)":\s*\(', block))
+
+        # Relever nom + taille décodée de chaque fichier embarqué. La taille est
+        # calculée depuis la longueur Base64 (4 caractères → 3 octets, moins le
+        # remplissage) plutôt qu'en décodant : instantané, et sans charger
+        # plusieurs Mo en mémoire pour un simple affichage.
+        self.embedded = {}
+        for m in re.finditer(r'    "([^"]+)": \(\n(.*?)\n    \),', block, re.DOTALL):
+            b64 = "".join(re.findall(r'"([A-Za-z0-9+/=]*)"', m.group(2)))
+            self.embedded[m.group(1)] = max(0, len(b64) * 3 // 4 - b64.count("="))
+        self.to_delete = set()
+
+        self._refresh_embedded()
         # Rafraîchir les cartes déjà présentes
         self._refresh_cards()
+
+    # ── Fichiers embarqués ────────────────────────────────────────────────────
+    def _toggle_delete(self, name: str):
+        """Marque / démarque un fichier embarqué pour suppression."""
+        if name in self.to_delete:
+            self.to_delete.discard(name)
+        else:
+            self.to_delete.add(name)
+        self._refresh_embedded()
+        self._refresh_ui()
+
+    def _refresh_embedded(self):
+        """Reconstruit la liste des fichiers embarqués."""
+        while self.emb_layout.count() > 1:
+            item = self.emb_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for name in sorted(self.embedded):
+            card = EmbeddedCard(name, self.embedded[name], name in self.to_delete)
+            card.toggled.connect(self._toggle_delete)
+            self.emb_layout.insertWidget(self.emb_layout.count() - 1, card)
+
+        total = len(self.embedded)
+        restant = total - len(self.to_delete)
+        if total:
+            self.emb_lbl.setText(
+                f"Fichiers actuellement embarqués — {total} présent(s)"
+                + (f", {len(self.to_delete)} à supprimer → {restant} restant(s)"
+                   if self.to_delete else "")
+            )
+        self.emb_empty.setVisible(total == 0)
 
     # ── Gestion des fichiers ──────────────────────────────────────────────────
     def _add_files(self, paths: list[str]):
@@ -521,9 +677,32 @@ class InstalleXUpdater(QMainWindow):
         if not self.script_path:
             QMessageBox.warning(self, "Script manquant", "Veuillez d'abord sélectionner le script LGS InstalleX.")
             return
-        if not self.pending_files:
-            QMessageBox.warning(self, "Aucun fichier", "Ajoutez au moins un fichier à mettre à jour.")
+        if not self.pending_files and not self.to_delete:
+            QMessageBox.warning(
+                self, "Aucune modification",
+                "Ajoutez un fichier à embarquer, ou marquez un fichier embarqué "
+                "pour suppression."
+            )
             return
+
+        # Une suppression retire définitivement le fichier du script : on la fait
+        # confirmer, en la listant nommément. (Le backup horodaté reste le filet.)
+        if self.to_delete:
+            noms = "\n".join(f"   • {n}" for n in sorted(self.to_delete))
+            reste = len(self.embedded) - len(self.to_delete) + len(
+                [p for p in self.pending_files if Path(p).name not in self.embedded]
+            )
+            rep = QMessageBox.question(
+                self, "Confirmer la suppression",
+                f"{len(self.to_delete)} fichier(s) seront RETIRÉS du script :\n\n{noms}\n\n"
+                f"Il restera {reste} fichier(s) embarqué(s).\n\n"
+                "Une sauvegarde horodatée du script est créée avant modification.\n"
+                "Continuer ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if rep != QMessageBox.StandardButton.Yes:
+                return
 
         self.apply_btn.setEnabled(False)
         self.clear_btn.setEnabled(False)
@@ -532,7 +711,8 @@ class InstalleXUpdater(QMainWindow):
         self.log_area.setVisible(True)
         self.log_area.clear()
 
-        self.worker = UpdateWorker(self.script_path, list(self.pending_files.keys()))
+        self.worker = UpdateWorker(self.script_path, list(self.pending_files.keys()),
+                                   sorted(self.to_delete))
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
         self.worker.start()
