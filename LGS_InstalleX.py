@@ -97692,7 +97692,9 @@ class SetupDialog(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
 
         title = QLabel(f"LGS InstalleX v{INSTALLEX_VERSION} — Informations de provisioning")
-        title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        # 13 pt et non 14 : le dialogue est en taille fixe (480 px, soit 440 px
+        # utiles) et le titre mesure 448 px en 14 pt — il serait tronqué.
+        title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
@@ -97712,7 +97714,7 @@ class SetupDialog(QWidget):
 
         layout.addLayout(form)
 
-        btn = QPushButton("🚀  Démarrer l'installation")
+        btn = QPushButton("🚀  Démarrer la configuration")
         btn.setFixedHeight(40)
         btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         btn.clicked.connect(self._launch)
