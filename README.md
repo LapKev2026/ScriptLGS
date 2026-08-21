@@ -370,7 +370,15 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 ### LGS InstalleX
 
-- **v1.0 (courant)** — première version sous le nom LGS InstalleX. Reprend l'intégralité des fonctionnalités et correctifs de P.R.I.S.M 3.8.1 ; seuls le nom et le versionnage changent. Identifiants internes alignés (`INSTALLEX_VERSION`, `$env:INSTALLEX_NEW_NAME`, `InstalleX_crash.log`).
+- **v1.0** *(2026-08-05)* — première version sous le nom LGS InstalleX. Reprend l'intégralité des fonctionnalités et correctifs de P.R.I.S.M 3.8.1 ; seuls le nom et le versionnage changent. Identifiants internes alignés (`INSTALLEX_VERSION`, `$env:INSTALLEX_NEW_NAME`, `InstalleX_crash.log`).
+- **Ajouts depuis la v1.0** *(le numéro de version n'a pas encore été incrémenté)* :
+  - **Configuration régionale** — fr-CA, date ISO `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time et position Canada, intégrés à l'étape 8 sans nouvelle étape numérotée.
+  - **Vérification finale** — 15 points remesurés sur le poste en fin de provisionnement, plutôt que déduits du déroulé du script.
+  - **Fiche de remise HTML** — déposée sur le bureau : identification, résultats des contrôles, inventaire matériel. Autonome et mise en page pour l'impression.
+  - **Configuration externe** — `LGS_InstalleX.config.json`, facultatif, pour ajuster un déploiement sans toucher au script.
+  - **Nettoyage de `%TEMP%`** — les installeurs déposés par le script sont supprimés en fin d'exécution, sur liste explicite.
+  - **Signal sonore de fin** — `program-complete.mp3` (5,3 Ko, 1,35 s) embarqué en Base64 et joué via MCI, en remplacement des bips.
+  - **Updater étendu** — `LGS_InstalleX_Updater.py` liste désormais les fichiers embarqués avec leur taille et permet de les supprimer, pas seulement de les remplacer.
 
 ### P.R.I.S.M (lignée précédente)
 
