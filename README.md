@@ -19,7 +19,8 @@ Outil de provisionnement automatisé des postes de travail pour les déploiement
 5. [Documentation](#4-documentation)
 6. [Interaction avec l'équipe de sécurité IBM](#5-interaction-proactive-et-continue-avec-léquipe-de-sécurité-ibm)
 7. [Installation et utilisation](#installation-et-utilisation)
-8. [Historique des versions](#historique-des-versions)
+8. [**Correctifs**](#correctifs)
+9. [Historique des versions](#historique-des-versions)
 
 ---
 
@@ -46,7 +47,7 @@ Deux implémentations fonctionnellement équivalentes sont maintenues en parall�
 - Détection de langue ; détection matérielle robuste des GPU NVIDIA (par ID fabricant PCI `VEN_10DE`) avec installation du pilote et de NVIDIA App (Entreprise) ; automatisation Windows Update
 - **Inventaire matériel** du poste collecté et journalisé au démarrage (sans effet sur le provisionnement), puis réutilisé dans la fiche de remise
 - **Configuration régionale** fr-CA : date ISO `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time, position géographique Canada
-- **Vérification finale** en 14 points qui remesure le poste réellement livré, et **fiche de remise HTML** déposée sur le bureau (identification, contrôles, inventaire)
+- **Vérification finale** en 15 points qui remesure le poste réellement livré, et **fiche de remise HTML** déposée sur le bureau (identification, contrôles, inventaire)
 - Téléchargements résilients : contexte TLS enrichi des magasins de certificats Windows, avec repli sur `curl.exe` (Schannel)
 - Journal détaillé écrit directement sur le bureau, à l'endroit où le technicien le cherche
 - Nettoyage automatique du dossier de déploiement compagnon en fin d'exécution
@@ -103,7 +104,7 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 
 1. **Création du dossier CAT** sur le bureau.
 2. **Extraction des fichiers embarqués** (Base64) dans le dossier CAT (PDF de procédures, raccourcis `.url`, etc.).
-3. **Raccourci bureau** `CAT.lnk` — créé via PowerShell COM `WScript.Shell` (aucune dépendance externe, disponible sur tout Windows).
+3. **Bureau utilisateur** — le dossier `CAT` étant créé directement sur le bureau à l'étape 2, aucun raccourci n'est posé : il ne ferait que dupliquer l'icône. L'étape **supprime** au contraire le `CAT.lnk` laissé par les versions antérieures, pour que les postes déjà provisionnés se nettoient d'eux-mêmes.
 4. **Renommage machine** — `Set-ItemProperty` (registre) + `Win32_ComputerSystem.Rename()` (WMI), sans `Rename-Computer` ni signal de redémarrage, effectif au prochain démarrage. Nom passé via `$env:INSTALLEX_NEW_NAME` (anti-injection), après validation NetBIOS.
    - *4b — Nouvelle embauche (conditionnel)* : ouverture de Box IBM et attente de l'acceptation du User Agreement, uniquement si l'option « Nouvelle embauche » est cochée dans l'écran de configuration.
 5. **Microsoft 365 Apps** — via winget (`Microsoft.Office` + `configuration.xml` maison passé en `--custom /configure`), avec repli automatique sur l'Office Deployment Tool local (`setup.exe` dans `C:\LGS_Deploy\ODT\`) ; ignoré si Office est déjà présent.
@@ -138,14 +139,14 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 > **Redémarrage en attente : tenter plutôt que renoncer** — l'étape abandonnait Windows Update dès qu'un redémarrage était en attente. En pratique cette condition est **auto-infligée** : l'étape 9 suit l'installation d'Office, des logiciels et des pilotes, qui posent justement ce marqueur — le code accepte d'ailleurs le code de sortie `3010`, qui signifie « succès, redémarrage requis ». Sur un poste provisionné, 3 des 4 indicateurs étaient présents : Windows Update ne tournait donc quasiment jamais. La prémisse était aussi trop stricte, un redémarrage en attente ne bloquant que certaines opérations de servicing — `PendingFileRenameOperations` en particulier est posé par presque tous les installeurs. L'état est désormais journalisé et reporté au bilan final, mais la mise à jour est tentée ; si Windows la refuse réellement, le traitement d'erreur existant l'intercepte et l'étape se termine proprement. Au pire on retrouve le comportement précédent, après un essai.
 10. **BitLocker → Entra ID** (`dsregcmd`, `Get-Tpm`, `Enable-BitLocker` XTS-AES-256, `BackupToAAD-BitLockerKeyProtector`, confirmation via event 845 ; **la clé de récupération n'est jamais journalisée**).
 
-*En clôture* : **vérification finale** (14 points remesurés sur le poste) et génération de la **fiche de remise HTML** sur le bureau — les deux avant le nettoyage, pour que la fiche reflète le poste tel qu'il est livré — puis suppression du dossier de déploiement `C:\LGS_Deploy`, récapitulatif des actions, détection d'un redémarrage requis et sauvegarde du journal sur le bureau.
+*En clôture* : **vérification finale** (15 points remesurés sur le poste) et génération de la **fiche de remise HTML** sur le bureau — les deux avant le nettoyage, pour que la fiche reflète le poste tel qu'il est livré — puis suppression du dossier de déploiement `C:\LGS_Deploy`, récapitulatif des actions, détection d'un redémarrage requis et sauvegarde du journal sur le bureau.
 
 **Vérification finale — points contrôlés**
 
 | Domaine | Contrôle |
 |---|---|
 | Identité | Nom d'ordinateur conforme à la demande |
-| Documentation | Dossier `CAT` et raccourci `CAT.lnk` sur le bureau |
+| Documentation | Dossier `CAT` présent sur le bureau |
 | Logiciels | Les 8 applications du catalogue, détectées par chemin + registre + MSIX |
 | Matériel Lenovo | Commercial Vantage (ignoré sur poste non-Lenovo) |
 | Chiffrement | BitLocker : état de protection et pourcentage chiffré |
@@ -181,7 +182,7 @@ Fichier `Fiche_Remise_<poste>_<horodatage>.html` déposé sur le bureau. Trois s
 
 **Outil compagnon**
 
-- **LGS InstalleX Asset Updater** (`LGS_InstalleX_Updater.py`, Python / PyQt6) — interface glisser-déposer permettant à du personnel non technique de remplacer les fichiers Base64 embarqués sans connaissances en développement. L'outil cible **le script Python** (`LGS_InstalleX.py`) : il localise le bloc `FICHIERS_EMBARQUES`, ré-encode les fichiers déposés en Base64 (lignes de 64 caractères) et réécrit le bloc en UTF-8 avec BOM, après création automatique d'une sauvegarde horodatée du script d'origine.
+- **LGS InstalleX Asset Updater** (`LGS_InstalleX_Updater.py`, Python / PyQt6) — interface glisser-déposer permettant à du personnel non technique de gérer les fichiers Base64 embarqués sans connaissances en développement. Au chargement d'un script, l'outil **liste les fichiers embarqués avec leur taille** et permet de **marquer ceux à supprimer** — le marquage reste réversible jusqu'à l'application, les suppressions sont confirmées nommément, et elles sont traitées avant les ajouts pour qu'un fichier redéposé sous le même nom l'emporte. L'outil cible **le script Python** (`LGS_InstalleX.py`) : il localise le bloc `FICHIERS_EMBARQUES`, ré-encode les fichiers déposés en Base64 (lignes de 64 caractères) et réécrit le bloc en UTF-8 avec BOM, après création automatique d'une sauvegarde horodatée du script d'origine.
 
 ---
 
@@ -286,6 +287,70 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 - Échec de téléchargement derrière un proxy d'entreprise : `download_file` bascule seul sur `curl.exe`. Si les deux chemins échouent, vérifier que le certificat d'inspection TLS est bien présent dans le magasin Windows (`ROOT` / `CA`).
 - Office installé mais en mauvaise langue / mauvais canal : vérifier que `--custom "/configure <xml>"` est bien transmis à winget — sans lui, winget appliquerait la configuration par défaut du manifeste au lieu de celle de LGS.
 - Attention : si l'élévation utilise un compte administrateur différent, le journal de crash est écrit dans le `%TEMP%` de ce compte.
+
+---
+
+## Correctifs
+
+> **Tenue de cette section** — tout défaut corrigé y est consigné, du plus récent au plus ancien : ce qui n'allait pas, ce qui a été fait, et le commit correspondant. L'objectif est qu'un correctif se retrouve en quelques secondes sans parcourir l'historique Git. **Chaque correction apportée au script doit donner lieu à une entrée ici.**
+
+### 2026-08-20
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Deux versions de la procédure de mot de passe embarquées simultanément — chaque poste recevait la v3.10.1 **et** une version périmée de dix mois, sans moyen de les distinguer | Retrait de `Win_Procedure_de_changement_des_mots_de_passe.docx` du bloc Base64 ; les 8 assets restants vérifiés identiques au bit près. Script réduit de 12,15 à 7,67 Mo | `ca575e3` |
+
+### 2026-08-19
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Windows Update annonçait **75 mises à jour** là où le poste en recevait 23 : `Get-WindowsUpdate -Install` émet un objet par mise à jour **et par étape**, et une même mise à jour peut venir de plusieurs services | Comptage par **titres distincts** (`Select-Object -Unique` côté PSWindowsUpdate, table de titres vus côté WUA, ensemble de secours côté Python). `AcceptEula` continue de s'appliquer à chaque objet | `db47de4` |
+| `0x8A15005E` s'affichait comme « Code HRESULT inconnu », masquant une cause pourtant documentée dans le code | Code nommé dans la table winget : « Source injoignable — épinglage de certificat (proxy à inspection SSL) » | `f2d92f2` |
+| `Raccourci CAT.lnk — FAIL` à chaque exécution : la vérification finale cherchait un raccourci que `step3_shortcuts` **supprime** volontairement | Contrôle retiré. La vérification compte **15 points** — le chiffre de 14 annoncé jusqu'ici était erroné, vérifié par comptage sur un journal d'exécution réel | `f2d92f2` |
+| BitLocker signalé en **échec** pendant le chiffrement : `ProtectionStatus` reste `Off` tant qu'il tourne, donc un poste à 98 % avec clé déjà sauvegardée était marqué en erreur | `VolumeStatus` et le pourcentage distinguent « chiffrement en cours » (avertissement) de « non protégé » (échec) | `f2d92f2` |
+| Slack déclaré introuvable 5 s après winget, alors qu'il l'était bien | Attente jusqu'à 30 s avant de conclure | `f2d92f2` |
+| `_msstore_install` imposait `--scope machine` alors que les paquets Store sont des MSIX qui gèrent leur propre portée | `--scope` retiré. Cause probable de l'échec de Commercial Vantage constaté sur poste | `b7c6f33` |
+| Windows Update pouvait immobiliser le technicien 2 h par méthode | Budget `WU_BUDGET_S` de **10 minutes** couvrant l'étape entière — le repli WUA n'obtient que le temps restant | `b7c6f33` |
+
+### 2026-08-14
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Windows Update **abandonné** dès qu'un redémarrage était en attente — condition auto-infligée par les installations des étapes 5 à 8, donc l'étape ne tournait quasiment jamais (3 des 4 indicateurs présents sur un poste mesuré) | L'état est journalisé et reporté au bilan, mais la mise à jour est **tentée**. Le traitement d'erreur existant intercepte un blocage réel | `23fa5d3` |
+
+### 2026-08-11
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Firefox installé **en anglais** : l'identifiant `Mozilla.Firefox` est le paquet en-US, Mozilla publiant un paquet par langue | Bascule sur `Mozilla.Firefox.fr`. Au passage, deux URL de repli cassées corrigées : `os=win64-msi` renvoyait 404, et `lang=fr-CA` n'existe pas chez Mozilla | `c0fa643` |
+| Écran de veille jamais appliqué à l'utilisateur final sur poste Entra ID : le filtre ne retenait que les SID `S-1-5-21-`, alors que les comptes Entra ID sont en `S-1-12-1-` | Les deux préfixes sont acceptés ; SID de service toujours exclus. Mesuré : 0 ruche retenue avant, 1 après | `94dc4c6` |
+| Les deux regex NetBIOS, que le code exige identiques, avaient divergé (`[A-Za-z0-9\-]` / `[A-Za-z0-9-]`) | Alignées. Comportement vérifié identique sur 10 entrées — l'écart était typographique, mais invitait une vraie divergence | `d32cd5b` |
+
+### 2026-08-05
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Numéro de série disque affiché sous forme d'**EUI-64 du contrôleur** (`0025_38A9_41BF_6A6F`) au lieu du numéro d'étiquette. Les trois classes WMI interrogées renvoyaient toutes la même valeur | Lecture de `FruId` puis `AdapterSerialNumber` de `MSFT_PhysicalDisk`, seules propriétés portant le vrai numéro. Vérifié : `S7G8NF1X923400` | `3893faf` |
+
+### 2026-08-04
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Écran de veille configuré mais **jamais armé** : Windows garde ces paramètres en cache pour la session ouverte, et `SystemParametersInfo` n'était jamais appelé (0 occurrence) | Appel de `SystemParametersInfoW` avec `SPIF_SENDCHANGE` : la session recharge le réglage immédiatement, sans redémarrage | `6928799` |
+| Slack échouait avec `-1978334957` (« paquet non supporté par ce système ») sans qu'aucune des 3 tentatives ne puisse aboutir | Ce code déclenche désormais un réessai **sans `--scope`**, comme `-1978335216` : les deux signifient « pas d'installeur pour cette portée » | `a8e5afa` |
+
+### 2026-07-31
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Codes de résultat Windows Update mal interprétés : `4` (Échec) et `5` (Abandonné) journalisés comme un simple « redémarrage requis », `3` passant pour un succès complet | Table `OperationResultCode` correcte et lecture de `RebootRequired` | `1610743` |
+| Le repli WUA n'appelait jamais `AcceptEula()` : toute mise à jour exigeant un CLUF échouait **silencieusement**, précisément dans le chemin utilisé quand PSGallery est bloqué par le proxy | `AcceptEula` appliqué à chaque mise à jour | `1610743` |
+| Deux balayages complets de Windows Update enchaînés (`Get` puis `Install`) | Une seule commande `Get-WindowsUpdate -Install` | `1610743` |
+| `PSGallery` laissé durablement en « Trusted » sur le poste livré | Politique d'origine restaurée dans un `finally` | `1610743` |
+| Intel DSA : code de retour de l'installeur **ignoré**, et fenêtre de détection de 30 s alors que l'étape annonce 1 à 2 min | Code lu et journalisé, fenêtre portée à 2 min, trois issues distinctes au lieu d'un message unique | `772446e` |
+| Le code de verrou MSI retenu pour les réessais était le mauvais : `-1978334957` (condition permanente) y figurait, tandis que `0x8A150102` (installation en cours) en était absent | Liste `WINGET_TRANSIENT` corrigée | `b84cc39` |
+| Doublon `-1978335215` dans la table des codes winget — Python conservait la dernière entrée, rendant la première morte | Doublon retiré | `772446e` |
+| Journal déplacé dans `%PROGRAMDATA%` avec ACL restreintes, imposant un raccourci pour le consulter | Retour à une écriture directe sur le bureau | `dc5249a` |
 
 ---
 
