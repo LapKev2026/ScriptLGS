@@ -95878,6 +95878,8 @@ try {
 
     def _install_adobe_direct(self):
         """Méthode de secours : téléchargement direct via l'API Adobe."""
+        tmp = None   # défini avant le try : le finally s'exécute même si l'appel
+                     # à l'API échoue, donc avant que le chemin soit calculé.
         try:
             self.log("Adobe — méthode directe : API Adobe...", "CMD")
             api_url = "https://rdc.adobe.io/reader/products?os=windows&arch=x64&productType=dc"
@@ -95910,10 +95912,17 @@ try {
                 self.log(f"Adobe Reader {ver} installé.", "OK")
             else:
                 self.log("Fichier Adobe trop petit — installation ignorée.", "WARN")
-            tmp.unlink(missing_ok=True)
         except Exception as exc:
             self.log(f"Adobe direct — échec : {exc}", "FAIL")
             self.log("Installez Adobe manuellement : https://get.adobe.com/reader/", "WARN")
+        finally:
+            # Dans un finally : une exception survenue pendant le téléchargement
+            # ou l'installation laissait sinon l'installeur dans %TEMP%.
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass   # verrouillé — repris par _cleanup_temp_files() plus tard
 
     # ─────────────────────────────────────────────────────────────────────────
     # ÉTAPE 7 — Favoris Edge
@@ -97102,8 +97111,10 @@ try {
             except Exception as exc:
                 self.log(f"Vérification finale — erreur : {exc}", "WARN")
 
-            # Toutes les étapes terminées : nettoyage du dossier de déploiement.
+            # Toutes les étapes terminées : nettoyage du dossier de déploiement
+            # puis des fichiers temporaires laissés par les installations.
             self._cleanup_deploy_folder()
+            self._cleanup_temp_files()
         except InterruptedError as exc:
             self.log(str(exc), "WARN")
         finally:
@@ -97113,6 +97124,71 @@ try {
             self.log("Script terminé normalement.", "OK")
             self.save_log()
             self.sig_done.emit()
+
+    # Artefacts que CE script dépose dans %TEMP%. Liste explicite et fermée :
+    # jamais de balayage générique du dossier temporaire, qui effacerait des
+    # fichiers appartenant à l'utilisateur ou à d'autres applications.
+    TEMP_ARTEFACTS = (
+        "Intel-DSA-Installer.exe",
+        "NVIDIA-Driver.exe",
+        "NVIDIA_app.exe",
+        "Firefox_Setup.msi",
+        "Firefox_Setup.exe",
+        "Chrome_Enterprise.msi",
+        "Chrome_Installer.exe",
+        "Slack_MachineWide.msi",
+        "AdobeReader_*.exe",     # le nom porte le numéro de version
+        "INSTALLEX_ODT",         # dossier : setup.exe ODT + configuration.xml
+        "LGS_Office",            # dossier : configuration.xml pour winget
+    )
+
+    def _cleanup_temp_files(self):
+        """Supprime de %TEMP% les fichiers déposés par ce script.
+
+        Chaque étape nettoie déjà son installeur dans un `finally`, mais cette
+        suppression échoue quand l'installeur tient encore le fichier verrouillé
+        — cas courant des programmes qui poursuivent en tâche de fond — et
+        l'échec était avalé silencieusement. Résultat constaté sur un poste :
+        374 Mo de pilote NVIDIA abandonnés dans %TEMP%.
+        Ce balayage repasse en fin d'exécution, une fois les verrous relâchés.
+
+        Le journal de crash (`InstalleX_crash.log`) est volontairement conservé :
+        c'est la seule trace exploitable si le script s'est interrompu.
+        """
+        temp = Path(tempfile.gettempdir())
+        libere, restants = 0, []
+
+        for motif in self.TEMP_ARTEFACTS:
+            for cible in temp.glob(motif):
+                try:
+                    if cible.is_dir():
+                        taille = sum(f.stat().st_size
+                                     for f in cible.rglob("*") if f.is_file())
+                        shutil.rmtree(cible, ignore_errors=True)
+                    else:
+                        taille = cible.stat().st_size
+                        cible.unlink(missing_ok=True)
+                    if cible.exists():
+                        restants.append(cible.name)
+                    else:
+                        libere += taille
+                except Exception:
+                    restants.append(cible.name)
+
+        if libere:
+            self.log(
+                f"Fichiers temporaires supprimés : {libere / 1024 / 1024:.0f} Mo "
+                "libérés dans %TEMP%.", "OK"
+            )
+        if restants:
+            # Ne pas masquer l'échec : un fichier encore verrouillé restera sur
+            # le disque et l'opérateur doit pouvoir le constater.
+            self.log(
+                "Fichiers temporaires encore verrouillés (à supprimer "
+                "manuellement si besoin) : " + ", ".join(restants), "WARN"
+            )
+        elif not libere:
+            self.log("Aucun fichier temporaire à supprimer.", "INFO")
 
     def _cleanup_deploy_folder(self):
         """Supprime le dossier de déploiement compagnon (C:\\LGS_Deploy) en fin de

@@ -294,6 +294,14 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 > **Tenue de cette section** — tout défaut corrigé y est consigné, du plus récent au plus ancien : ce qui n'allait pas, ce qui a été fait, et le commit correspondant. L'objectif est qu'un correctif se retrouve en quelques secondes sans parcourir l'historique Git. **Chaque correction apportée au script doit donner lieu à une entrée ici.**
 
+### 2026-08-21
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Installeurs abandonnés dans `%TEMP%` : chaque étape nettoie bien le sien dans un `finally`, mais la suppression échoue tant que l'installeur tient le fichier verrouillé, et l'échec était **avalé silencieusement**. Constat sur un poste : **374 Mo** de pilote NVIDIA restés en place | `_cleanup_temp_files()` repasse en fin d'exécution, une fois les verrous relâchés, sur une **liste explicite et fermée** d'artefacts — jamais de balayage générique de `%TEMP%`. Ce qui reste verrouillé est désormais **nommé dans le journal** au lieu d'être ignoré. Le journal de crash est volontairement conservé | `—` |
+| `%TEMP%\INSTALLEX_ODT` (setup.exe de l'ODT + `configuration.xml`) et `%TEMP%\LGS_Office` n'étaient jamais supprimés | Les deux dossiers rejoignent la liste nettoyée en fin d'exécution | `—` |
+| Adobe : le `unlink` était dans le corps du `try`, donc sauté dès qu'une exception survenait pendant le téléchargement ou l'installation | Déplacé dans un `finally`, avec `tmp` initialisé avant le `try` pour couvrir un échec antérieur au calcul du chemin | `—` |
+
 ### 2026-08-20
 
 | Défaut | Correction | Commit |
