@@ -378,10 +378,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QLineEdit, QCheckBox, QFormLayout, QMessageBox
 )
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal
+    Qt, QThread, pyqtSignal, QPointF, QSize
 )
 from PyQt6.QtGui import (
-    QFont, QIcon, QPixmap
+    QFont, QIcon, QPixmap, QPainter, QColor, QPolygonF
 )
 
 
@@ -93769,6 +93769,35 @@ CLR_SKIP       = "#666688"
 CLR_STEP_DONE  = "#0A2A0A"
 CLR_STEP_ACT   = "#0A0A2A"
 
+
+def icone_play(taille: int = 18, fond: str = CLR_OK) -> QIcon:
+    """Icône « bouton play » : disque vert et triangle blanc, peinte à la volée.
+
+    Ne doit être appelée qu'après la création du QApplication : QPixmap exige
+    un moteur graphique initialisé.
+    """
+    px = QPixmap(taille, taille)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    try:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(fond))
+        p.drawEllipse(0, 0, taille, taille)
+        # Triangle légèrement décalé vers la droite : centré optiquement, un
+        # triangle centré géométriquement paraît décalé vers la gauche.
+        m = taille * 0.30
+        p.setBrush(QColor("white"))
+        p.drawPolygon(QPolygonF([
+            QPointF(m * 1.25, m),
+            QPointF(taille - m * 0.9, taille / 2),
+            QPointF(m * 1.25, taille - m),
+        ]))
+    finally:
+        p.end()          # sans quoi le QPixmap reste verrouillé par le peintre
+    return QIcon(px)
+
+
 STEPS = [
     "Diagnostic système",
     "Création des dossiers",
@@ -97714,7 +97743,13 @@ class SetupDialog(QWidget):
 
         layout.addLayout(form)
 
-        btn = QPushButton("🚀  Démarrer la configuration")
+        btn = QPushButton("  Démarrer la configuration")
+        # Icône dessinée à l'exécution plutôt qu'un emoji : le rendu des emojis
+        # dépend de la police système et aucun « play » vert n'existe en
+        # standard. Un QPixmap peint donne la couleur exacte, reste net à toute
+        # échelle, et n'ajoute aucun fichier au projet.
+        btn.setIcon(icone_play())
+        btn.setIconSize(QSize(18, 18))
         btn.setFixedHeight(40)
         btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         btn.clicked.connect(self._launch)
