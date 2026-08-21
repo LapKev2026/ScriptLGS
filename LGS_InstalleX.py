@@ -145,6 +145,9 @@ CONFIG_FILENAME = "LGS_InstalleX.config.json"
 CONFIG_DEFAULTS = {
     "computer_name":       "",
     "nouvelle_embauche":   False,
+    # Chemin d'un .mp3 / .wav joué en fin de provisionnement. Vide → son
+    # embarqué s'il existe, sinon les bips.
+    "sound_file":          "",
     "homepage":            "https://www.lgs.com",
     "screensaver_timeout": 600,
     "timezone":            "Eastern Standard Time",
@@ -186,6 +189,48 @@ def load_config() -> tuple[dict, str]:
 
 
 CONFIG, CONFIG_ORIGINE = load_config()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SON DE FIN (facultatif)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Base64 d'un fichier .mp3 ou .wav joué à la fin du provisionnement, à la place
+# des bips. Laisser vide pour conserver les bips.
+#
+# Pour y placer VOTRE son :
+#     python -c "import base64,pathlib; print(base64.b64encode(pathlib.Path(r'C:\son.mp3').read_bytes()).decode())"
+# puis coller le résultat entre les guillemets ci-dessous, et ajuster SON_FIN_EXT.
+# Un son de quelques secondes pèse en général moins de 100 Ko.
+SON_FIN_B64 = ""
+SON_FIN_EXT = ".mp3"          # extension réelle du contenu ci-dessus
+
+
+def play_sound(path: Path, timeout_s: int = 30) -> bool:
+    """Joue un fichier audio et attend la fin. Retourne True si la lecture a eu lieu.
+
+    Passe par MCI (winmm.dll) et non par `winsound`, qui ne sait lire que le WAV :
+    le pilote MCI « mpegvideo » gère le MP3 nativement, sans aucune dépendance
+    tierce — ce qui compte ici, le script n'en ayant qu'une seule (PyQt6).
+    """
+    try:
+        mci = ctypes.windll.winmm.mciSendStringW
+        buf = ctypes.create_unicode_buffer(256)
+        alias = "InstalleXFin"
+        # Alias fermé d'abord au cas où une lecture précédente traînerait.
+        mci(f"close {alias}", buf, 254, None)
+        if mci(f'open "{path}" type mpegvideo alias {alias}', buf, 254, None) != 0:
+            # Repli : laisser MCI déduire le type du fichier.
+            if mci(f'open "{path}" alias {alias}', buf, 254, None) != 0:
+                return False
+        try:
+            # « wait » bloque jusqu'à la fin — cette fonction tourne dans un
+            # thread dédié, l'interface n'est donc pas figée.
+            mci(f"play {alias} wait", buf, 254, None)
+            return True
+        finally:
+            mci(f"close {alias}", buf, 254, None)
+    except Exception:
+        return False
+
 
 # Dossier unique de dépôt des paquets de déploiement compagnons (ODT, Vantage…).
 # Sous-dossiers attendus : ODT\  et  CommercialVantage\
@@ -97138,6 +97183,7 @@ try {
         "Chrome_Installer.exe",
         "Slack_MachineWide.msi",
         "AdobeReader_*.exe",     # le nom porte le numéro de version
+        "InstalleX_son_fin.*",   # son de fin extrait du Base64
         "INSTALLEX_ODT",         # dossier : setup.exe ODT + configuration.xml
         "LGS_Office",            # dossier : configuration.xml pour winget
     )
@@ -98003,9 +98049,40 @@ class InstalleXWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Erreur", f"Impossible d'ouvrir le log :\n{exc}")
 
+    def _resoudre_son_fin(self) -> Path | None:
+        """Chemin du son de fin, ou None s'il faut retomber sur les bips.
+
+        Deux sources, dans cet ordre :
+          1. la clé « sound_file » de la configuration externe — pratique pour
+             changer de son sans retoucher au script ;
+          2. le son embarqué en Base64 (SON_FIN_B64), extrait dans %TEMP% pour
+             que le poste n'ait besoin d'aucun fichier annexe. Le fichier extrait
+             figure dans TEMP_ARTEFACTS et sera nettoyé en fin d'exécution.
+        """
+        chemin = (CONFIG.get("sound_file") or "").strip()
+        if chemin:
+            p = Path(chemin)
+            if p.is_file():
+                return p
+
+        if SON_FIN_B64:
+            try:
+                dest = Path(tempfile.gettempdir()) / f"InstalleX_son_fin{SON_FIN_EXT}"
+                dest.write_bytes(base64.b64decode(SON_FIN_B64))
+                return dest
+            except Exception:
+                return None
+        return None
+
     def _show_completion_beep(self):
-        """Bips de fin (équivalent PowerShell [console]::beep)."""
-        def beep_loop():
+        """Signal sonore de fin : son personnalisé si disponible, sinon bips."""
+        son = self._resoudre_son_fin()
+
+        def jouer():
+            # Le son n'est qu'une notification : si quoi que ce soit échoue, on
+            # revient aux bips plutôt que de terminer en silence.
+            if son is not None and play_sound(son):
+                return
             for _ in range(5):
                 try:
                     import winsound
@@ -98017,7 +98094,8 @@ class InstalleXWindow(QMainWindow):
                     time.sleep(0.8)
                 except Exception:
                     break
-        threading.Thread(target=beep_loop, daemon=True).start()
+
+        threading.Thread(target=jouer, daemon=True).start()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
