@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8-sig -*-
 """
-LGS InstalleX v1.0
+LGS InstalleX v1.1
 Provisionnement automatise des postes de travail LGS
 Conversion Python 3 / PyQt6
 © Copyright Groupe LGS — une Société IBM
@@ -9,7 +9,7 @@ Conversion Python 3 / PyQt6
 
 # Versionnage repris à 1.0 avec le passage de P.R.I.S.M à LGS InstalleX.
 # La lignée technique précédente s'arrêtait à 3.8.1 (cf. README, historique).
-INSTALLEX_VERSION = "1.0"   # ← incrémenter ici uniquement lors des releases
+INSTALLEX_VERSION = "1.1"   # ← incrémenter ici uniquement lors des releases
 
 
 # DOIT être avant tout autre import : les union types (X | Y), list[str],

@@ -4,7 +4,7 @@
 
 Outil de provisionnement automatisé des postes de travail pour les déploiements Groupe LGS — une société IBM.
 
-> Version applicative : **1.0** (Python / PyQt6) — versionnage repris à 1.0 lors du passage de P.R.I.S.M à LGS InstalleX ; la lignée technique précédente s'arrêtait à 3.8.1
+> Version applicative : **1.1** (Python / PyQt6) — versionnage repris à 1.0 lors du passage de P.R.I.S.M à LGS InstalleX ; la lignée technique précédente s'arrêtait à 3.8.1
 > Version parallèle maintenue : **PowerShell / WinForms** (lignée v3.x)
 > © Copyright Groupe LGS — une société IBM
 
@@ -371,7 +371,7 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 ### LGS InstalleX
 
 - **v1.0** *(2026-08-05)* — première version sous le nom LGS InstalleX. Reprend l'intégralité des fonctionnalités et correctifs de P.R.I.S.M 3.8.1 ; seuls le nom et le versionnage changent. Identifiants internes alignés (`INSTALLEX_VERSION`, `$env:INSTALLEX_NEW_NAME`, `InstalleX_crash.log`).
-- **Ajouts depuis la v1.0** *(le numéro de version n'a pas encore été incrémenté)* :
+- **v1.1 (courant)** *(2026-08-21)* — sept ajouts fonctionnels, sans changement de comportement pour les étapes existantes :
   - **Configuration régionale** — fr-CA, date ISO `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time et position Canada, intégrés à l'étape 8 sans nouvelle étape numérotée.
   - **Vérification finale** — 15 points remesurés sur le poste en fin de provisionnement, plutôt que déduits du déroulé du script.
   - **Fiche de remise HTML** — déposée sur le bureau : identification, résultats des contrôles, inventaire matériel. Autonome et mise en page pour l'impression.
