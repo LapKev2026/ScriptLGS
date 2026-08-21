@@ -97747,6 +97747,29 @@ class SetupDialog(QWidget):
             }}
             QCheckBox {{
                 color: {CLR_TEXT_MUTED};
+                spacing: 8px;
+            }}
+            /* Sans style explicite, l'indicateur héritait du fond de QWidget :
+               la case était invisible sur le thème sombre. Elle est donc dessinée
+               à la main — bordure + fond contrasté à l'état décoché, remplissage
+               accent à l'état coché.
+               Pas de glyphe de coche : Qt ne charge pas les data: URI dans une
+               feuille de style (vérifié — l'image ne s'affiche pas), et un
+               fichier image externe irait contre l'autonomie du script. Le
+               contraste vide/plein suffit à distinguer les deux états. */
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 1px solid {CLR_TEXT_MUTED};
+                border-radius: 3px;
+                background: {CLR_BG2};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {CLR_ACCENT};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {CLR_ACCENT};
+                border: 4px solid {CLR_BG2};
             }}
         """)
 
