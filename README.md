@@ -298,9 +298,9 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 | Défaut | Correction | Commit |
 |---|---|---|
-| Installeurs abandonnés dans `%TEMP%` : chaque étape nettoie bien le sien dans un `finally`, mais la suppression échoue tant que l'installeur tient le fichier verrouillé, et l'échec était **avalé silencieusement**. Constat sur un poste : **374 Mo** de pilote NVIDIA restés en place | `_cleanup_temp_files()` repasse en fin d'exécution, une fois les verrous relâchés, sur une **liste explicite et fermée** d'artefacts — jamais de balayage générique de `%TEMP%`. Ce qui reste verrouillé est désormais **nommé dans le journal** au lieu d'être ignoré. Le journal de crash est volontairement conservé | `—` |
-| `%TEMP%\INSTALLEX_ODT` (setup.exe de l'ODT + `configuration.xml`) et `%TEMP%\LGS_Office` n'étaient jamais supprimés | Les deux dossiers rejoignent la liste nettoyée en fin d'exécution | `—` |
-| Adobe : le `unlink` était dans le corps du `try`, donc sauté dès qu'une exception survenait pendant le téléchargement ou l'installation | Déplacé dans un `finally`, avec `tmp` initialisé avant le `try` pour couvrir un échec antérieur au calcul du chemin | `—` |
+| Installeurs abandonnés dans `%TEMP%` : chaque étape nettoie bien le sien dans un `finally`, mais la suppression échoue tant que l'installeur tient le fichier verrouillé, et l'échec était **avalé silencieusement**. Constat sur un poste : **374 Mo** de pilote NVIDIA restés en place | `_cleanup_temp_files()` repasse en fin d'exécution, une fois les verrous relâchés, sur une **liste explicite et fermée** d'artefacts — jamais de balayage générique de `%TEMP%`. Ce qui reste verrouillé est désormais **nommé dans le journal** au lieu d'être ignoré. Le journal de crash est volontairement conservé | `691b69c` |
+| `%TEMP%\INSTALLEX_ODT` (setup.exe de l'ODT + `configuration.xml`) et `%TEMP%\LGS_Office` n'étaient jamais supprimés | Les deux dossiers rejoignent la liste nettoyée en fin d'exécution | `691b69c` |
+| Adobe : le `unlink` était dans le corps du `try`, donc sauté dès qu'une exception survenait pendant le téléchargement ou l'installation | Déplacé dans un `finally`, avec `tmp` initialisé avant le `try` pour couvrir un échec antérieur au calcul du chemin | `691b69c` |
 
 ### 2026-08-20
 
