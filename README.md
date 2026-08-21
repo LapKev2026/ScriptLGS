@@ -199,7 +199,7 @@ Les tests sont menés de façon itérative, sur postes réels, selon un cycle «
 - Vérification de la sauvegarde de la clé BitLocker dans Entra ID (event 845).
 - Tests de robustesse : coupure réseau, échec d'une étape, chemins avec espaces, session non-admin.
 
-Depuis l'ajout de la **vérification finale**, chaque exécution produit sa propre preuve : la fiche de remise HTML consigne l'état réel du poste en 14 points. Conserver ces fiches constitue le relevé de tests le plus fidèle, poste par poste.
+Depuis l'ajout de la **vérification finale**, chaque exécution produit sa propre preuve : la fiche de remise HTML consigne l'état réel du poste en 15 points. Conserver ces fiches constitue le relevé de tests le plus fidèle, poste par poste.
 
 > **À compléter** — matrice de tests, environnements couverts (versions Windows, builds), et résultats détaillés à consigner ici au fur et à mesure.
 
