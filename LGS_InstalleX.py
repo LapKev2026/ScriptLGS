@@ -97682,7 +97682,9 @@ class SetupDialog(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LGS InstalleX — Configuration initiale")
-        self.setFixedSize(480, 260)
+        # 520 px et non 480 : le titre en 14 pt mesure 448 px et ne tenait pas
+        # dans les 440 px utiles de l'ancienne largeur. Ici il reste 32 px de marge.
+        self.setFixedSize(520, 260)
         self._build_ui()
         self._apply_style()
 
@@ -97692,9 +97694,7 @@ class SetupDialog(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
 
         title = QLabel(f"LGS InstalleX v{INSTALLEX_VERSION} — Informations de provisioning")
-        # 13 pt et non 14 : le dialogue est en taille fixe (480 px, soit 440 px
-        # utiles) et le titre mesure 448 px en 14 pt — il serait tronqué.
-        title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
