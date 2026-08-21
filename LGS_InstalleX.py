@@ -97693,7 +97693,7 @@ class SetupDialog(QWidget):
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel(f"LGS InstalleX v{INSTALLEX_VERSION} — Informations de provisioning")
+        title = QLabel(f"LGS InstalleX v{INSTALLEX_VERSION} — Configuration initiale")
         title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
