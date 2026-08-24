@@ -296,6 +296,12 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 > **Tenue de cette section** — tout défaut corrigé y est consigné, du plus récent au plus ancien : ce qui n'allait pas, ce qui a été fait, et le commit correspondant. L'objectif est qu'un correctif se retrouve en quelques secondes sans parcourir l'historique Git. **Chaque correction apportée au script doit donner lieu à une entrée ici.**
 
+### 2026-08-24
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Commercial Vantage déclaré **ABSENT** par la vérification finale alors qu'il venait d'être installé avec succès. Les deux contrôles divergeaient : l'installation cherchait , la vérification  — or le paquet s'appelle  et **ne contient pas « Vantage »**. Il manquait aussi , indispensable puisque le script tourne élevé | Détection extraite dans , une définition **unique** partagée par les deux appels. Rendue robuste au passage :  exige l'élévation et renvoyait une sortie vide — ni YES ni NO — en cas de refus ; un try/catch et un repli sur la requête utilisateur courant garantissent désormais une réponse |  |
+
 ### 2026-08-21
 
 | Défaut | Correction | Commit |

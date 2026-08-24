@@ -94968,6 +94968,30 @@ try {
     # n'est pas signé Microsoft, il est rejeté.
     ODT_CDN_URL = "https://officecdn.microsoft.com/pr/wsus/setup.exe"
 
+    # Détection de Commercial Vantage — UNE SEULE définition, partagée par
+    # l'installation et la vérification finale.
+    #
+    # Le nom du paquet Appx est « LenovoSettingsforEnterprise », il ne contient
+    # PAS « Vantage ». La vérification finale cherchait `-Name '*Vantage*'` sans
+    # `-AllUsers` : elle ne trouvait donc rien, et déclarait le logiciel ABSENT
+    # alors qu'il venait d'être installé avec succès — un faux échec sur la
+    # fiche de remise.
+    #
+    # `-AllUsers` est indispensable : le script tourne élevé, et un paquet Store
+    # provisionné pour la machine n'apparaît pas dans la session courante.
+    # `-AllUsers` exige l'élévation : sans privilèges, PowerShell renvoie
+    # « Accès refusé » et une sortie VIDE — ni YES ni NO — ce qui serait relu
+    # comme une absence. On l'encadre donc d'un try/catch et on retombe sur la
+    # requête utilisateur courant, pour que la commande réponde toujours.
+    VANTAGE_CHECK_PS = (
+        "$p = $null\n"
+        "try { $p = Get-AppxPackage -AllUsers *LenovoSettingsforEnterprise* "
+        "-ErrorAction Stop } catch { }\n"
+        "if (-not $p) { try { $p = Get-AppxPackage *LenovoSettingsforEnterprise* "
+        "-ErrorAction Stop } catch { } }\n"
+        "if ($p) { 'YES' } else { 'NO' }"
+    )
+
     # Microsoft Store — Lenovo COMMERCIAL Vantage (repli si le paquet de
     # déploiement Lenovo est absent du poste).
     # NE PAS confondre avec 9WZDNCRFJ4MV, la version GRAND PUBLIC : celle-ci
@@ -95998,10 +96022,7 @@ try {
         self.log("LENOVO COMMERCIAL VANTAGE", "SECTION")
 
         # 2. Déjà installé ? (paquet appx provisionné E046963F.LenovoSettingsforEnterprise)
-        _check = (
-            "if (Get-AppxPackage -AllUsers *LenovoSettingsforEnterprise* "
-            "-ErrorAction SilentlyContinue) { 'YES' } else { 'NO' }"
-        )
+        _check = self.VANTAGE_CHECK_PS
         _, out_c = run_cmd(
             ["powershell", "-NoProfile", "-Command", _check], timeout=30
         )
@@ -97500,9 +97521,14 @@ try {
             " -ErrorAction SilentlyContinue).Manufacturer)"), timeout=30)
         est_lenovo = "lenovo" in (fab or "").lower()
         if est_lenovo:
-            _, out_v = run_cmd(self._ps_encoded(
-                "if (Get-AppxPackage -Name '*Vantage*') { Write-Output 'YES' }"), timeout=45)
-            ok_v = "YES" in (out_v or "")
+            # Même contrôle qu'à l'installation (VANTAGE_CHECK_PS) : les deux
+            # divergeaient, et la vérification déclarait ABSENT un logiciel
+            # pourtant installé.
+            _, out_v = run_cmd(
+                ["powershell", "-NoProfile", "-Command", self.VANTAGE_CHECK_PS],
+                timeout=45
+            )
+            ok_v = "YES" in (out_v or "").upper()
             add("Lenovo Commercial Vantage", "OK" if ok_v else "FAIL",
                 "installé" if ok_v else "ABSENT — déposer le paquet de déploiement")
         else:
