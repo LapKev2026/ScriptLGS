@@ -300,7 +300,7 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 | Défaut | Correction | Commit |
 |---|---|---|
-| Commercial Vantage déclaré **ABSENT** par la vérification finale alors qu'il venait d'être installé avec succès. Les deux contrôles divergeaient : l'installation cherchait , la vérification  — or le paquet s'appelle  et **ne contient pas « Vantage »**. Il manquait aussi , indispensable puisque le script tourne élevé | Détection extraite dans , une définition **unique** partagée par les deux appels. Rendue robuste au passage :  exige l'élévation et renvoyait une sortie vide — ni YES ni NO — en cas de refus ; un try/catch et un repli sur la requête utilisateur courant garantissent désormais une réponse |  |
+| Commercial Vantage déclaré **ABSENT** par la vérification finale alors qu'il venait d'être installé avec succès. Les deux contrôles divergeaient : l'installation cherchait `-AllUsers *LenovoSettingsforEnterprise*`, la vérification `-Name '*Vantage*'` — or le paquet s'appelle `E046963F.LenovoSettingsforEnterprise` et **ne contient pas « Vantage »**. Il manquait aussi `-AllUsers`, indispensable puisque le script tourne élevé | Détection extraite dans `VANTAGE_CHECK_PS`, une définition **unique** partagée par les deux appels. Rendue robuste au passage : `-AllUsers` exige l'élévation et renvoyait une sortie **vide** — ni `YES` ni `NO` — en cas de refus ; un `try/catch` et un repli sur la requête utilisateur courant garantissent désormais une réponse | `fef9cda` |
 
 ### 2026-08-21
 
