@@ -95069,29 +95069,63 @@ try {
         -1978335215,   # 0x8A150011 INSTALLER_HASH_MISMATCH — hash de manifeste périmé
     )
 
+    # 0x8A15005E — winget épingle le certificat de ses sources ; un proxy à
+    # inspection SSL le réécrit, et la source refuse alors de s'ouvrir. Observé
+    # en production sur la source msstore.
+    WINGET_SOURCE_KO = -1978335138
+
     def _msstore_install(self, store_id: str, name: str) -> bool:
         """Installe un paquet depuis le Microsoft Store (source msstore).
 
-        Utilisé en dernier recours seulement : la source msstore échoue avec
-        0x8A15005E (certificate pinning) derrière un proxy à inspection SSL, et
-        les paquets Store sont des MSIX — donc refusés sur les images où le
-        déploiement AppX est restreint.
+        Utilisé en dernier recours seulement : les paquets Store sont des MSIX,
+        refusés sur les images où le déploiement AppX est restreint, et la source
+        msstore peut échouer avec 0x8A15005E (épinglage de certificat).
+
+        Ce dernier cas n'est PAS forcément définitif. Sur un poste fraîchement
+        imagé, la configuration proxy et les services Store ne sont pas encore
+        stabilisés au moment de l'étape 6 — et winget suggère lui-même « try the
+        'source reset' command » dans son message d'erreur. On réinitialise donc
+        les sources et on retente une fois avant d'abandonner.
         """
         if not self._winget_ok:
             return False
-        self.log(f"{name} — tentative via le Microsoft Store ({store_id})...", "CMD")
-        # Pas de --scope : les paquets Store sont des MSIX et gèrent eux-mêmes
-        # leur portée. L'imposer faisait échouer l'installation, exactement comme
-        # pour Slack (-1978334957, « paquet non supporté par ce système »).
-        code, out = run_cmd([
+
+        cmd = [
             "winget", "install", "--id", store_id,
             "--exact",
             "--source", "msstore",
             "--accept-package-agreements",
             "--accept-source-agreements",
-        ], timeout=900)
+            # Pas de --scope : les paquets Store sont des MSIX et gèrent eux-mêmes
+            # leur portée. L'imposer faisait échouer l'installation, exactement
+            # comme pour Slack (-1978334957, « paquet non supporté »).
+        ]
+
+        self.log(f"{name} — tentative via le Microsoft Store ({store_id})...", "CMD")
+        code, out = run_cmd(cmd, timeout=900)
         if code in (0, 3010, 1641):
             return True
+
+        if code == self.WINGET_SOURCE_KO:
+            self.log(
+                f"{name} — source Store injoignable (épinglage de certificat). "
+                "Réinitialisation des sources winget puis nouvelle tentative...", "WARN"
+            )
+            # Reset SANS --name : d'après l'aide winget, la forme nommée
+            # « supprime » la source, tandis que la forme globale « supprime
+            # toutes les sources ET ajoute les sources par défaut » — seule
+            # celle-ci garantit donc que msstore revienne. Sans risque ici :
+            # les postes n'utilisent que les trois sources Microsoft d'origine
+            # (msstore, winget, winget-font), aucune source maison à préserver.
+            run_cmd(["winget", "source", "reset", "--force"], timeout=120)
+            # Ne mettre à jour QUE msstore : « winget source update » sans nom
+            # rafraîchit aussi les autres sources et rallonge inutilement l'étape.
+            run_cmd(["winget", "source", "update", "--name", "msstore"], timeout=120)
+            code, out = run_cmd(cmd, timeout=900)
+            if code in (0, 3010, 1641):
+                self.log(f"{name} — installé après réinitialisation de la source.", "OK")
+                return True
+
         self.log_winget(f"{name} (Store)", code)
         for line in (out or "").strip().splitlines()[:4]:
             if line.strip():
