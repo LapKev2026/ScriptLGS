@@ -93808,6 +93808,7 @@ STEPS = [
     "Logiciels (Firefox, Chrome…)",
     "Favoris navigateurs",
     "Configuration Windows",
+    "Windows Update",
 ]
 
 # ─── CHEMINS DE DÉTECTION ET IDS WINGET ───────────────────────────────────────
@@ -94610,7 +94611,7 @@ class InstallWorker(QThread):
             self.log(f"Erreur création dossier CAT : {exc}", "FAIL")
 
         self.step(1, "done", "Dossier CAT prêt")
-        self.progress(2, "Étape 2/9 — Fichiers de documentation")
+        self.progress(2, "Étape 2/10 — Fichiers de documentation")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ÉTAPE 2 — Fichiers de documentation (embedded)
@@ -94632,7 +94633,7 @@ class InstallWorker(QThread):
                 self.log(f"Erreur extraction {nom} : {exc}", "FAIL")
 
         self.step(2, "done", f"{len(FICHIERS_EMBARQUES)} fichier(s) extraits")
-        self.progress(3, "Étape 3/9 — Bureau utilisateur")
+        self.progress(3, "Étape 3/10 — Bureau utilisateur")
 
 
     def step3_shortcuts(self):
@@ -94657,7 +94658,7 @@ class InstallWorker(QThread):
             self.log("Dossier CAT accessible directement sur le bureau.", "INFO")
 
         self.step(3, "done", "Bureau vérifié")
-        self.progress(4, "Étape 4/9 — Nom d'ordinateur")
+        self.progress(4, "Étape 4/10 — Nom d'ordinateur")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ÉTAPE 4 — Nom d'ordinateur
@@ -94735,7 +94736,7 @@ try {
             self.log("Aucun nouveau nom fourni — étape ignorée.", "SKIP")
 
         self.step(4, "done", f"Nom : {new_name or current}")
-        self.progress(5, "Étape 5/9 — Microsoft Office")
+        self.progress(5, "Étape 5/10 — Microsoft Office")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ÉTAPE 4b — Nouvelle embauche : Box User Agreement
@@ -94888,7 +94889,7 @@ try {
             self.log("Microsoft 365 Apps déjà installé.", "SKIP")
             self._update_office()
             self.step(5, "done", "Office déjà présent")
-            self.progress(6, "Étape 6/9 — Logiciels")
+            self.progress(6, "Étape 6/10 — Logiciels")
             return
 
         # 1) winget d'abord : aucun fichier à pré-déposer, setup.exe téléchargé
@@ -94899,7 +94900,7 @@ try {
             self.log("Microsoft 365 Apps installé via winget.", "OK")
             self._update_office()
             self.step(5, "done", "Office installé")
-            self.progress(6, "Étape 6/9 — Logiciels")
+            self.progress(6, "Étape 6/10 — Logiciels")
             return
 
         # 2) Repli ODT local — utile si winget est absent, si le poste n'a pas
@@ -94917,7 +94918,7 @@ try {
             )
             self.step(5, "done", "Office : échec (manuel requis)")
 
-        self.progress(6, "Étape 6/9 — Logiciels")
+        self.progress(6, "Étape 6/10 — Logiciels")
 
     def _install_office_winget(self) -> bool:
         """Installe Microsoft 365 Apps via winget, en lui passant NOTRE configuration.xml.
@@ -95475,10 +95476,18 @@ try {
              "RestoreOnStartup",    4,           winreg.REG_DWORD),
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome\RestoreOnStartupURLs",
              "1",                   homepage,    winreg.REG_SZ),
+            # Edge : « HomepageLocation » ne pilote que le BOUTON Accueil. La page
+            # d'ouverture exige RestoreOnStartup=4 (« ouvrir des pages précises »)
+            # et RestoreOnStartupURLs — Chrome les recevait déjà, pas Edge, d'où
+            # un Edge qui ne s'ouvrait pas sur la page LGS.
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
              "HomepageLocation",    homepage,    winreg.REG_SZ),
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
              "HomepageIsNewTabPage", 0,          winreg.REG_DWORD),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
+             "RestoreOnStartup",    4,           winreg.REG_DWORD),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge\RestoreOnStartupURLs",
+             "1",                   homepage,    winreg.REG_SZ),
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Mozilla\Firefox\Homepage",
              "URL",                 homepage,    winreg.REG_SZ),
         ]
@@ -95700,7 +95709,7 @@ try {
         self._install_commercial_vantage()
 
         self.step(6, "done", "Logiciels installés")
-        self.progress(7, "Étape 7/9 — Favoris navigateurs")
+        self.progress(7, "Étape 7/10 — Favoris navigateurs")
 
     @staticmethod
     def _ps_encoded(script: str) -> list[str]:
@@ -96282,7 +96291,7 @@ try {
         self._write_firefox_bookmarks()
 
         self.step(7, "done", "Favoris navigateurs configurés")
-        self.progress(8, "Étape 8/9 — Configuration Windows")
+        self.progress(8, "Étape 8/10 — Configuration Windows")
 
     def _write_chromium_bookmarks(self, user_data: str, proc_name: str,
                                   label: str, bar_reg: tuple):
@@ -96629,7 +96638,470 @@ try {
         self._restore_power_settings()
 
         self.step(9, "done", "Configuration Windows terminée")
-        self.progress(9, "Étape 9/9 — Terminé")
+        self.progress(9, "Étape 9/10 — Windows Update")
+
+    # Signaux d'une session Windows Update DÉJÀ active.
+    #
+    # Deux signaux seulement, choisis pour ne pas produire de faux positif :
+    #   - `IUpdateInstaller.IsBusy` : fait autorité, une installation est en cours ;
+    #   - `MoUsoCoreWorker.exe` (orchestrateur) présent ET ayant consommé du CPU —
+    #     un processus fraîchement lancé n'a encore rien fait.
+    #
+    # Deux candidats écartés, mesures à l'appui :
+    #   - `wuauserv` tourne en permanence (« Running » sur un poste au repos) ;
+    #   - `TiWorker.exe` démarre pour n'importe quelle opération de servicing,
+    #     y compris une simple requête Appx/DISM sans rapport avec Windows Update.
+    #     Observé à 0 s de CPU juste après une commande `Get-AppxProvisionedPackage`.
+    WU_BUSY_PS = (
+        "$busy = $false\n"
+        "try { $busy = (New-Object -ComObject Microsoft.Update.Installer).IsBusy } catch { }\n"
+        "if (-not $busy) {\n"
+        "    $u = Get-Process -Name 'MoUsoCoreWorker' -ErrorAction SilentlyContinue\n"
+        "    if ($u -and ($u | Measure-Object -Property CPU -Sum).Sum -gt 5) { $busy = $true }\n"
+        "}\n"
+        "if ($busy) { 'BUSY' } else { 'IDLE' }"
+    )
+
+    def _windows_update_actif(self) -> bool:
+        """Windows Update travaille-t-il déjà en arrière-plan ?
+
+        Voir `WU_BUSY_PS` pour les signaux retenus et ceux écartés.
+
+        En cas de doute, on répond False : relancer une recherche est sans
+        conséquence, alors que sauter l'étape à tort priverait le poste de ses
+        mises à jour. L'asymétrie est volontaire.
+        """
+        try:
+            code, out = run_cmd(self._ps_encoded(self.WU_BUSY_PS), timeout=60)
+            return code == 0 and "BUSY" in (out or "").upper()
+        except Exception:
+            return False
+
+    def step9_windows_update(self):
+        self.step(10, "active", "Recherche des mises à jour...")
+        self.log("WINDOWS UPDATE", "SECTION")
+        wu_debut = time.monotonic()
+
+        # Si Windows Update tourne déjà, on le laisse finir : lancer une
+        # seconde session en parallèle ne l'accélère pas et peut la faire
+        # échouer sur un verrou. Les mises à jour se poseront d'elles-mêmes.
+        if self._windows_update_actif():
+            self.log(
+                "Windows Update travaille déjà en arrière-plan — session "
+                "existante laissée en place, aucune recherche lancée.", "SKIP"
+            )
+            self.step(10, "done", "Déjà actif en arrière-plan")
+            self.progress(10, "Étape 10/10 — Terminé")
+            return
+
+        # ── Redémarrage en attente : on le SIGNALE mais on tente quand même ───
+        #
+        # Historique : cette détection provoquait un `return` immédiat, donc un
+        # abandon pur et simple de Windows Update. C'était contre-productif pour
+        # deux raisons.
+        #
+        # 1) La condition est très largement AUTO-INFLIGÉE. L'étape 9 s'exécute
+        #    après l'installation d'Office (étape 5), des logiciels et pilotes
+        #    (étape 6) et de la configuration Windows (étape 8) — or ces
+        #    installations posent précisément un redémarrage en attente. Le code
+        #    accepte d'ailleurs 3010 comme succès, et 3010 signifie « succès,
+        #    redémarrage requis ». Le script créait donc lui-même la condition
+        #    qui le faisait renoncer, et Windows Update ne tournait quasiment
+        #    jamais. (Mesuré sur un poste provisionné : 3 des 4 indicateurs
+        #    étaient présents.)
+        #
+        # 2) La prémisse est trop stricte. Un redémarrage en attente ne bloque
+        #    pas Windows Update en général — seulement certaines opérations de
+        #    servicing. PendingFileRenameOperations en particulier est posé par
+        #    quasiment tous les installeurs et ne bloque pratiquement jamais.
+        #
+        # On journalise donc l'état, on mémorise le besoin de redémarrage pour le
+        # bilan final, et on TENTE la mise à jour. Si Windows la refuse vraiment,
+        # le traitement d'erreur plus bas (PSWU_FAIL contenant « reboot » /
+        # « restart » / « pending ») intercepte le cas et sort proprement : au
+        # pire on retombe sur le comportement précédent, après un essai.
+        reboot_pending_keys = [
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\PackagesPending"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager"),  # PendingFileRenameOperations
+        ]
+        reboot_required = False
+        for hive, path in reboot_pending_keys[:3]:  # les 3 premières sont booléennes (clé présente = reboot)
+            try:
+                with winreg.OpenKey(hive, path):
+                    reboot_required = True
+                    break
+            except OSError:
+                continue
+
+        # Cas spécial : PendingFileRenameOperations dans Session Manager
+        if not reboot_required:
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SYSTEM\CurrentControlSet\Control\Session Manager"
+                ) as key:
+                    val, _ = winreg.QueryValueEx(key, "PendingFileRenameOperations")
+                    if val:
+                        reboot_required = True
+            except OSError:
+                pass
+
+        if reboot_required:
+            # Mémorisé pour le bilan final (_check_reboot_required), qui
+            # annonçait « aucun redémarrage nécessaire » malgré ce constat.
+            self._reboot_pending_seen = True
+            self.log(
+                "Redémarrage en attente détecté (probablement dû aux installations "
+                "des étapes précédentes). Windows Update est tenté malgré tout.", "WARN"
+            )
+
+        # Méthode 1 : PSWindowsUpdate via PowerShell (UTF-8 forcé via chcp)
+        ps_script = r"""
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+$prevPolicy = $null
+try {
+    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers -EA SilentlyContinue | Out-Null
+    # Mémoriser la politique PSGallery : le poste livré ne doit pas rester avec
+    # un dépôt marqué Trusted (elle est restaurée dans le finally).
+    $prevPolicy = (Get-PSRepository -Name PSGallery -EA SilentlyContinue).InstallationPolicy
+    if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -EA SilentlyContinue
+        Install-Module -Name PSWindowsUpdate -Force -Scope AllUsers -AllowClobber -Repository PSGallery -EA Stop | Out-Null
+    }
+    Import-Module PSWindowsUpdate -Force -EA Stop
+
+    # Enregistrer le service Microsoft Update : apporte les correctifs Office et
+    # les pilotes, absents du service Windows Update seul.
+    try {
+        $sm = New-Object -ComObject Microsoft.Update.ServiceManager
+        $sm.AddService2('7971f918-a847-4430-9279-4a52d1efe18d', 7, '') | Out-Null
+        Write-Host "INFO: Service Microsoft Update enregistre (Office + pilotes)"
+    } catch {
+        Write-Host "INFO: Microsoft Update non enregistre - $($_.Exception.Message)"
+    }
+
+    # Boucle multi-passes : Windows Update revele souvent de nouvelles MAJ une
+    # fois les precedentes posees. On s'arrete des qu'il n'y a plus rien, qu'un
+    # redemarrage est requis, ou au bout de 3 passes.
+    $total = 0
+    for ($pass = 1; $pass -le 3; $pass++) {
+        # UNE seule commande recherche ET installe (-Install) : l'ancien code
+        # enchainait Get-WindowsUpdate puis Install-WindowsUpdate, soit deux
+        # balayages complets de Windows Update.
+        $res = @(Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -Install -IgnoreReboot -EA Stop)
+        if ($res.Count -eq 0) {
+            if ($pass -eq 1) { Write-Host "DONE: Systeme deja a jour" }
+            else { Write-Host "DONE: $total mise(s) a jour installee(s)" }
+            break
+        }
+        # Get-WindowsUpdate -Install emet un objet par mise a jour ET PAR ETAPE
+        # (recherche, telechargement, installation), et une meme mise a jour peut
+        # etre proposee par plusieurs services depuis qu'on enregistre Microsoft
+        # Update. Sans dedoublonnage, un poste avec 23 mises a jour en annoncait
+        # 75 et les listait trois fois. On compte donc des TITRES DISTINCTS.
+        $titres = @($res | ForEach-Object { $_.Title } |
+                    Where-Object { $_ } | Select-Object -Unique)
+        $titres | ForEach-Object { Write-Host "UPDATE: $_" }
+        $total += $titres.Count
+        Write-Host "INFO: Passe $pass - $($titres.Count) mise(s) a jour posee(s)"
+        $needReboot = $false
+        try { $needReboot = [bool](Get-WURebootStatus -Silent) } catch { }
+        if ($needReboot) {
+            Write-Host "REBOOT: $total mise(s) a jour installee(s)"
+            break
+        }
+        if ($pass -eq 3) { Write-Host "DONE: $total mise(s) a jour installee(s)" }
+    }
+} catch {
+    Write-Host "PSWU_FAIL: $($_.Exception.Message)"
+} finally {
+    if ($prevPolicy -and $prevPolicy -ne 'Trusted') {
+        Set-PSRepository -Name PSGallery -InstallationPolicy $prevPolicy -EA SilentlyContinue
+    }
+}
+"""
+        # Lancer un heartbeat dans un thread secondaire : indique à l'opérateur
+        # que l'étape est toujours active pendant le long silence de Windows Update.
+        _wupdate_stop = threading.Event()
+        def _heartbeat():
+            mins = 0
+            while not _wupdate_stop.wait(60):
+                mins += 1
+                self.log(f"Windows Update en cours… ({mins} min écoulée(s))", "INFO")
+        _hb = threading.Thread(target=_heartbeat, daemon=True)
+        _hb.start()
+
+        # SEC-3 : RemoteSigned — les scripts PS système (PSGallery, WUA) sont
+        # signés par Microsoft et s'exécutent sans Bypass.
+        code, out = run_cmd([
+            "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+            "-Command", "$OutputEncoding=[System.Text.Encoding]::UTF8; " + ps_script
+        ], timeout=self.WU_BUDGET_S)
+
+        _wupdate_stop.set()
+
+        # Budget épuisé : on n'enchaîne pas sur le repli WUA, on passe à la suite.
+        # run_cmd renvoie -1 et un message « Délai dépassé » lorsqu'il tue le
+        # processus au timeout.
+        if code == -1 and "Délai dépassé" in (out or ""):
+            self.log(
+                f"Windows Update — délai de {self.WU_BUDGET_S // 60} min atteint ; "
+                "les mises à jour restantes se poursuivront en arrière-plan après "
+                "la remise du poste.", "WARN"
+            )
+            self.step(10, "done", f"Interrompu après {self.WU_BUDGET_S // 60} min")
+            self.progress(10, "Étape 10/10 — Terminé")
+            return
+
+        # Filet de sécurité : même dédoublonné côté PowerShell, on ne journalise
+        # jamais deux fois le même titre.
+        titres_vus = set()
+        pswu_failed = False
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("UPDATE:"):
+                titre = line[7:].strip()
+                if titre in titres_vus:
+                    continue
+                titres_vus.add(titre)
+                self.log(f"Mise à jour : {titre}", "INFO")
+            elif line.startswith("INFO:"):
+                self.log(line[5:].strip(), "INFO")
+            elif line.startswith("REBOOT:"):
+                # Le cycle s'est arrêté sur un redémarrage requis : le signaler au
+                # bilan final, qui annonçait sinon « aucun redémarrage nécessaire ».
+                self._reboot_pending_seen = True
+                self.log(f"{line[7:].strip()} — redémarrage requis pour continuer.", "WARN")
+            elif line.startswith("DONE:"):
+                self.log(line[5:].strip(), "OK")
+            elif line.startswith("PSWU_FAIL:"):
+                msg = line[10:].strip().lower()
+                pswu_failed = True
+                # PSWindowsUpdate peut retourner "reboot required" dans son exception
+                if any(k in msg for k in ("reboot", "restart", "redémarr", "pending")):
+                    self.log(
+                        "PSWindowsUpdate : redémarrage requis avant de continuer les MAJ.", "WARN"
+                    )
+                    self.step(10, "done", "⚠️ Redémarrage requis — MAJ au prochain boot")
+                    self.progress(10, "Étape 10/10 — Terminé")
+                    return
+                else:
+                    self.log("PSWindowsUpdate indisponible — fallback WUA...", "WARN")
+
+        if pswu_failed or code != 0:
+            # Fallback : Windows Update Agent natif (COM via PowerShell)
+            wua_script = r"""
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+    $session = New-Object -ComObject Microsoft.Update.Session
+
+    # Enregistrer Microsoft Update (Office + pilotes) et cibler ce service.
+    $svcId = '7971f918-a847-4430-9279-4a52d1efe18d'
+    $useMU = $false
+    try {
+        $sm = New-Object -ComObject Microsoft.Update.ServiceManager
+        $sm.AddService2($svcId, 7, '') | Out-Null
+        $useMU = $true
+        Write-Host "INFO: Service Microsoft Update enregistre (Office + pilotes)"
+    } catch {
+        Write-Host "INFO: Microsoft Update non enregistre - $($_.Exception.Message)"
+    }
+
+    $total = 0
+    for ($pass = 1; $pass -le 3; $pass++) {
+        $searcher = $session.CreateUpdateSearcher()
+        if ($useMU) { $searcher.ServiceID = $svcId; $searcher.ServerSelection = 3 }
+        # Plus de filtre Type='Software' : il excluait TOUS les pilotes proposes
+        # par Windows Update.
+        $result = $searcher.Search("IsInstalled=0 and IsHidden=0")
+        if ($result.Updates.Count -eq 0) {
+            if ($pass -eq 1) { Write-Host "DONE: Systeme deja a jour (WUA)" }
+            else { Write-Host "DONE: $total mise(s) a jour installee(s) (WUA)" }
+            break
+        }
+        # Un titre n'est journalise qu'une fois (cf. dedoublonnage cote
+        # PSWindowsUpdate), mais AcceptEula est appele sur CHAQUE objet : ce sont
+        # des mises a jour distinctes, meme si leur libelle est identique.
+        $vus = @{}
+        foreach ($u in $result.Updates) {
+            if (-not $vus.ContainsKey($u.Title)) {
+                $vus[$u.Title] = $true
+                Write-Host "UPDATE: $($u.Title)"
+            }
+            # Accepter le CLUF : sans cela toute MAJ qui en exige un echoue
+            # silencieusement (l'ancien code ne le faisait jamais).
+            if (-not $u.EulaAccepted) { try { $u.AcceptEula() } catch { } }
+        }
+        $dl = $session.CreateUpdateDownloader()
+        $dl.Updates = $result.Updates
+        $dl.Download() | Out-Null
+        $inst = $session.CreateUpdateInstaller()
+        $inst.Updates = $result.Updates
+        $r = $inst.Install()
+        $total += $result.Updates.Count
+        # OperationResultCode : 2=Succeeded 3=SucceededWithErrors 4=Failed 5=Aborted
+        Write-Host "RESULT: pass=$pass code=$($r.ResultCode) reboot=$($r.RebootRequired) count=$($result.Updates.Count)"
+        if ($r.ResultCode -eq 4 -or $r.ResultCode -eq 5) { break }
+        if ($r.RebootRequired) { break }
+        if ($pass -eq 3) { Write-Host "DONE: $total mise(s) a jour installee(s) (WUA)" }
+    }
+} catch {
+    Write-Host "FAIL: $($_.Exception.Message)"
+}
+"""
+            _wua_stop = threading.Event()
+            def _heartbeat_wua():
+                mins = 0
+                while not _wua_stop.wait(60):
+                    mins += 1
+                    self.log(f"Windows Update (WUA) en cours… ({mins} min écoulée(s))", "INFO")
+            _hb2 = threading.Thread(target=_heartbeat_wua, daemon=True)
+            _hb2.start()
+
+            # Le repli n'obtient que ce qui reste du budget de l'étape, avec un
+            # plancher de 60 s pour lui laisser au moins le temps de démarrer.
+            reste = max(60, int(self.WU_BUDGET_S - (time.monotonic() - wu_debut)))
+            self.log(f"Repli WUA — {reste // 60} min restantes sur le budget.", "INFO")
+            code2, out2 = run_cmd([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+                "-Command", wua_script
+            ], timeout=reste)
+
+            _wua_stop.set()
+
+            # OperationResultCode de l'API Windows Update. L'ancien code lisait
+            # 4 comme « SucceededWithErrors / redémarrage requis » : en réalité
+            # 4 = Échec et 5 = Abandonné, donc des échecs étaient journalisés en
+            # simple WARN de redémarrage, et 3 passait pour un succès complet.
+            WUA_RESULT = {
+                0: ("WARN", "non démarré"),
+                1: ("WARN", "encore en cours"),
+                2: ("OK",   "réussi"),
+                3: ("WARN", "réussi avec erreurs"),
+                4: ("FAIL", "échec"),
+                5: ("FAIL", "abandonné"),
+            }
+            for line in out2.splitlines():
+                line = line.strip()
+                if line.startswith("UPDATE:"):
+                    titre = line[7:].strip()
+                    if titre in titres_vus:
+                        continue
+                    titres_vus.add(titre)
+                    self.log(f"Mise à jour : {titre}", "INFO")
+                elif line.startswith("INFO:"):
+                    self.log(line[5:].strip(), "INFO")
+                elif line.startswith("RESULT:"):
+                    m = re.search(r"pass=(\d+)\s+code=(\d+)\s+reboot=(\w+)\s+count=(\d+)", line)
+                    if m:
+                        p, rc, rb, cnt = (int(m.group(1)), int(m.group(2)),
+                                          m.group(3).lower() == "true", int(m.group(4)))
+                        lvl, label = WUA_RESULT.get(rc, ("WARN", f"code {rc}"))
+                        self.log(
+                            f"Passe {p} — {cnt} mise(s) à jour : {label}.", lvl
+                        )
+                        if lvl != "OK":
+                            self.log(
+                                "Vérifier l'historique dans Paramètres > Windows Update.",
+                                "WARN"
+                            )
+                        if rb:
+                            self._reboot_pending_seen = True
+                            self.log("Windows Update : redémarrage requis.", "WARN")
+                    else:
+                        self.log(line, "INFO")
+                elif line.startswith("DONE:"):
+                    self.log(line[5:].strip(), "OK")
+                elif line.startswith("FAIL:"):
+                    msg = line[5:].strip().lower()
+                    if any(k in msg for k in ("reboot", "restart", "pending")):
+                        self.log("WUA : redémarrage requis avant de continuer les MAJ.", "WARN")
+                        self.step(10, "done", "⚠️ Redémarrage requis — MAJ au prochain boot")
+                        self.progress(10, "Étape 10/10 — Terminé")
+                        return
+                    self.log(f"Windows Update WUA : {line[5:].strip()}", "FAIL")
+                    self.log("Lancez Windows Update manuellement : Paramètres > Windows Update", "WARN")
+
+        self.step(10, "done", "Windows Update terminé")
+        self.progress(10, "Étape 10/10 — Terminé")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ÉTAPE 10 — BitLocker + sauvegarde de la clé dans Entra ID
+    # ─────────────────────────────────────────────────────────────────────────
+
+    PS_BITLOCKER_ENTRA = r"""
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+try {
+    # 1) Vérifier la jonction Entra ID (natif ou hybride)
+    $ds = (dsregcmd /status) | Out-String
+    if ($ds -notmatch 'AzureAdJoined\s*:\s*YES') {
+        Write-Host 'FAIL: Appareil non joint a Entra ID - sauvegarde impossible'
+        exit 1
+    }
+
+    # 2) Vérifier le TPM
+    $tpm = Get-Tpm
+    if (-not $tpm.TpmPresent -or -not $tpm.TpmReady) {
+        Write-Host 'FAIL: TPM absent ou non initialise'
+        exit 1
+    }
+
+    # 3) Activer BitLocker sur C: si nécessaire (TPM, XTS-AES 256, espace utilisé)
+    $vol = Get-BitLockerVolume -MountPoint 'C:'
+    if ($vol.VolumeStatus -eq 'FullyDecrypted') {
+        Enable-BitLocker -MountPoint 'C:' -EncryptionMethod XtsAes256 `
+            -UsedSpaceOnly -TpmProtector -SkipHardwareTest | Out-Null
+        Write-Host 'INFO: BitLocker active (chiffrement en cours en arriere-plan)'
+    } else {
+        Write-Host "INFO: BitLocker deja actif (statut: $($vol.VolumeStatus))"
+    }
+
+    # 4) Garantir un protecteur RecoveryPassword (le TPM seul ne se sauvegarde pas)
+    $vol = Get-BitLockerVolume -MountPoint 'C:'
+    $rp  = $vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
+    if (-not $rp) {
+        Add-BitLockerKeyProtector -MountPoint 'C:' -RecoveryPasswordProtector | Out-Null
+        $rp = (Get-BitLockerVolume -MountPoint 'C:').KeyProtector |
+              Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
+        Write-Host 'INFO: Protecteur de recuperation cree'
+    }
+
+    # 5) Sauvegarder chaque protecteur RecoveryPassword dans Entra ID
+    foreach ($p in $rp) {
+        BackupToAAD-BitLockerKeyProtector -MountPoint 'C:' -KeyProtectorId $p.KeyProtectorId
+        Write-Host "OK: Cle $($p.KeyProtectorId) envoyee vers Entra ID"
+    }
+
+    # 6) Confirmation via le journal d'événements (event 845 = backup réussi)
+    # On attend 10s — sur réseau lent ou Entra ID congestionné, l'event
+    # peut prendre plusieurs secondes à être écrit après la cmdlet.
+    Start-Sleep -Seconds 10
+    $evt = Get-WinEvent -FilterHashtable @{
+        LogName = 'Microsoft-Windows-BitLocker/BitLocker Management'; Id = 845
+    } -MaxEvents 1 -ErrorAction SilentlyContinue
+    if ($evt -and $evt.TimeCreated -gt (Get-Date).AddMinutes(-10)) {
+        Write-Host "DONE: Sauvegarde confirmee dans Entra ID (event 845 a $($evt.TimeCreated.ToString('HH:mm:ss')))"
+        Write-Host "INFO: Pour verifier → Portail Entra ID > Devices > $env:COMPUTERNAME > BitLocker keys"
+    } else {
+        Write-Host 'WARN: Event 845 non trouve - la cle a peut-etre ete envoyee mais non confirmee'
+        Write-Host "INFO: Verifiez dans → Portail Entra ID > Devices > $env:COMPUTERNAME > BitLocker keys"
+    }
+} catch {
+    Write-Host "FAIL: $($_.Exception.Message)"
+    exit 1
+}
+"""
 
     def collect_inventory(self) -> dict:
         """Collecte l'inventaire matériel via CIM. Retourne un dict clé → valeur.
@@ -96778,6 +97250,7 @@ try {
             (6,    self.step6_software),
             (7,    self.step7_edge_bookmarks),
             (8,    self.step8_windows_config),
+            (9,    self.step9_windows_update),
         ]
         try:
             for idx, fn in etapes:
@@ -97668,7 +98141,7 @@ class InstalleXWindow(QMainWindow):
         self.step_panels[0].update_state(
             "done", f"Build {self.win_build} — {self.win_version}"
         )
-        self._on_progress(1, "Étape 1/9 — Création des dossiers")
+        self._on_progress(1, "Étape 1/10 — Création des dossiers")
 
         self.worker.start()
 

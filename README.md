@@ -26,7 +26,7 @@ Outil de provisionnement automatisé des postes de travail pour les déploiement
 
 ## Aperçu
 
-LGS InstalleX automatise la préparation complète d'un poste de travail Windows dans le cadre des déploiements LGS, depuis un poste fraîchement imagé jusqu'à un poste prêt à remettre à l'utilisateur. L'outil regroupe en une seule interface les étapes habituellement manuelles et sujettes à erreur : renommage machine, configuration régionale, jonction Entra ID, installation des applications standard, et vérifications post-installation. Le chiffrement BitLocker et Windows Update relèvent des stratégies du parc et ne sont plus pilotés par l'outil ; la vérification finale se contente d'en **constater** l'état.
+LGS InstalleX automatise la préparation complète d'un poste de travail Windows dans le cadre des déploiements LGS, depuis un poste fraîchement imagé jusqu'à un poste prêt à remettre à l'utilisateur. L'outil regroupe en une seule interface les étapes habituellement manuelles et sujettes à erreur : renommage machine, configuration régionale, jonction Entra ID, installation des applications standard, et vérifications post-installation. Le chiffrement BitLocker relève des stratégies du parc et n'est plus piloté par l'outil ; la vérification finale se contente d'en **constater** l'état.
 
 Deux implémentations fonctionnellement équivalentes sont maintenues en parallèle :
 
@@ -37,7 +37,7 @@ Deux implémentations fonctionnellement équivalentes sont maintenues en parall�
 
 **Caractéristiques principales**
 
-- Provisionnement en 8 étapes séquentielles (grille de progression sur 9 jalons) avec log temps réel
+- Provisionnement en 9 étapes séquentielles (grille de progression sur 10 jalons) avec log temps réel
 - Élévation UAC automatique et exécution en contexte administrateur
 - Jonction Entra ID couvrant les scénarios Autopilot, PPKG et manuel
 - Déploiement applicatif via winget avec repli sur téléchargement direct ; Microsoft 365 Apps installé par winget avec configuration maîtrisée (repli sur l'ODT local) et Lenovo Commercial Vantage via paquet de déploiement compagnon
@@ -76,6 +76,7 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 - **Encodage UTF-8 forcé** — encodage UTF-8 (avec BOM) de bout en bout, incluant l'injection d'un préfixe console pour les appels PowerShell, afin d'éviter la corruption des accents et caractères spéciaux sur un Windows en français.
 - **Détection et confirmation uniformes** — le helper `_soft_present()` combine chemins de fichiers **et** clés Uninstall du registre (HKLM 64/32 bits + HKCU) pour toutes les applications ; la détection par chemin seule ratait les installations dans un dossier renommé d'une version à l'autre. Le même contrôle est rejoué **après** chaque installation : un `0` retourné par winget ne prouve pas que le logiciel est présent (cas constaté sur Office).
 - **Mise à jour d'Office après installation** — l'ODT comme winget posent la version présente sur le CDN au moment du déploiement ; sans passe de mise à jour, un poste neuf peut être livré avec plusieurs correctifs de retard. `_update_office()` appelle donc `OfficeC2RClient.exe /update` — winget n'ayant aucune prise sur un Office installé en Click-to-Run — après une installation **et** lorsque Office était déjà présent. `forceappshutdown=false` est volontaire : le script pouvant être relancé sur un poste en service, forcer la fermeture d'Office y ferait perdre le travail en cours ; la mise à jour s'applique alors à la prochaine fermeture.
+- **Windows Update : ne pas doubler une session en cours** — l'étape vérifie d'abord `IUpdateInstaller.IsBusy` et la présence de `MoUsoCoreWorker.exe` ayant réellement consommé du CPU. Deux signaux ont été écartés après mesure : `wuauserv`, qui tourne en permanence, et `TiWorker.exe`, qui démarre pour n'importe quelle opération de servicing — y compris une simple requête Appx sans rapport avec Windows Update. En cas de doute, l'étape s'exécute : relancer une recherche est sans conséquence, la sauter à tort priverait le poste de ses mises à jour.
 - **Saut de Commercial Vantage sous conditions strictes** — l'étape n'est ignorée que si le paquet est trouvé, que son `Status` vaut `Ok` et que son dossier d'installation existe réellement. L'asymétrie est assumée : un faux positif laisserait un poste sans Vantage, alors qu'un faux négatif se contente de réinstaller ce qui est déjà là.
 - **Support MSI et téléchargements résilients** — `_install_from_url()` télécharge via `download_file()` (contexte TLS + repli `curl.exe`/Schannel) et lance automatiquement les `.msi` par `msiexec /i /qn /norestart`, les `.exe` recevant leurs arguments propres. Le code de sortie de l'installeur est lu et journalisé.
 - **Installation applicative pilotée par les données** — le catalogue logiciel (`LOGICIELS`) décrit chaque application (chemins de détection, motifs registre, identifiant winget, URL et méthode de repli) ; l'étape 6 l'exploite pour uniformiser détection et installation. Un dossier compagnon `C:\LGS_Deploy` (`LGS_DEPLOY_DIR`, sous-dossiers `ODT\` et `CommercialVantage\`) héberge les paquets de déploiement entreprise : il est requis pour Lenovo Commercial Vantage, et sert de repli pour Microsoft 365 Apps.
@@ -137,6 +138,8 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 > **Slack et la portée d'installation** — en portée machine, winget sert le paquet **MSIX** de Slack, provisionné pour tous les profils : c'est le comportement attendu en provisionnement, et la raison pour laquelle `--scope machine` est conservé. En portée utilisateur, Slack n'atterrirait que dans le profil du technicien. Conséquence importante pour la détection : un Slack installé en MSIX réside dans `C:\Program Files\WindowsApps` et n'expose **aucun** des chemins classiques — d'où la détection par registre et par nom de paquet Appx (`appx_name`).
 7. **Favoris Microsoft Edge** — écriture des favoris dans les profils + activation de la barre des favoris.
 8. **Configuration Windows** — écran de veille (Ribbons.scr, 10 min, verrouillage) écrit dans le profil par défaut et dans chaque ruche utilisateur chargée, **puis appliqué à la session en cours** via `SystemParametersInfoW` ; **configuration régionale** (fr-CA, date `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time, position Canada) ; désactivation du démarrage rapide ; restauration des paramètres de veille sauvegardés.
+9. **Windows Update** — PSWindowsUpdate avec repli sur l'agent COM natif (WUA). L'étape commence par vérifier qu'**aucune session Windows Update n'est déjà en cours** : si c'est le cas, elle laisse la session existante travailler plutôt que d'en lancer une seconde en parallèle. Le service **Microsoft Update** est enregistré pour couvrir les correctifs Office et les pilotes, jusqu'à **3 passes** s'enchaînent, et l'étape dispose d'un **budget de 10 minutes** au-delà duquel le provisionnement continue.
+
 *En clôture* : **vérification finale** (15 points remesurés sur le poste) et génération de la **fiche de remise HTML** sur le bureau — les deux avant le nettoyage, pour que la fiche reflète le poste tel qu'il est livré — puis suppression du dossier de déploiement `C:\LGS_Deploy`, récapitulatif des actions, détection d'un redémarrage requis et sauvegarde du journal sur le bureau.
 
 **Vérification finale — points contrôlés**
@@ -157,7 +160,7 @@ Le résultat est journalisé point par point, puis résumé en trois issues : co
 
 Fichier `Fiche_Remise_<poste>_<horodatage>.html` déposé sur le bureau. Trois sections : identification (poste, date, technicien, durée, version de l'outil), résultats de la vérification avec pastilles de couleur, et inventaire matériel complet. Autonome (CSS embarqué, aucune dépendance réseau) et mis en page pour l'impression.
 
-> La barre de progression de la GUI est graduée sur 9 jalons (le diagnostic initial, les 8 étapes numérotées ci-dessus, puis l'état « Terminé »). L'étape 4b n'occupe pas de rang numéroté distinct.
+> La barre de progression de la GUI est graduée sur 10 jalons (le diagnostic initial, les 9 étapes numérotées ci-dessus, puis l'état « Terminé »). L'étape 4b n'occupe pas de rang numéroté distinct.
 
 **Points techniques notables**
 
@@ -289,6 +292,12 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 > **Tenue de cette section** — tout défaut corrigé y est consigné, du plus récent au plus ancien : ce qui n'allait pas, ce qui a été fait, et le commit correspondant. L'objectif est qu'un correctif se retrouve en quelques secondes sans parcourir l'historique Git. **Chaque correction apportée au script doit donner lieu à une entrée ici.**
 
+### 2026-08-25
+
+| Défaut | Correction | Commit |
+|---|---|---|
+| Edge ne s'ouvrait pas sur `www.lgs.com`. Seuls `HomepageLocation` et `HomepageIsNewTabPage` lui étaient posés — or `HomepageLocation` ne pilote que le **bouton Accueil**, pas la page d'ouverture. Chrome recevait bien les quatre clés nécessaires, Edge seulement deux | Ajout de `RestoreOnStartup` à `4` (« ouvrir des pages précises ») et de `RestoreOnStartupURLs\1` pour Edge, à l'identique de Chrome | `—` |
+
 ### 2026-08-24
 
 | Défaut | Correction | Commit |
@@ -372,7 +381,9 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 ### LGS InstalleX
 
 - **v1.0** *(2026-08-05)* — première version sous le nom LGS InstalleX. Reprend l'intégralité des fonctionnalités et correctifs de P.R.I.S.M 3.8.1 ; seuls le nom et le versionnage changent. Identifiants internes alignés (`INSTALLEX_VERSION`, `$env:INSTALLEX_NEW_NAME`, `InstalleX_crash.log`).
-- **v1.2 (courant)** *(2026-08-25)* :
+- **Depuis la v1.2** *(le numéro de version n'a pas encore été incrémenté)* :
+  - **Windows Update rétabli, avec garde-fou** — l'étape est de retour (le provisionnement repasse à **9 étapes / 10 jalons**), mais elle commence par vérifier qu'aucune session Windows Update n'est déjà active : dans ce cas elle laisse la session existante travailler au lieu d'en lancer une seconde, qui ne l'accélérerait pas et risquerait d'échouer sur un verrou. BitLocker, lui, reste hors du script.
+- **v1.2** *(2026-08-25)* :
   - **Mise à jour d'Office après installation** — une passe `OfficeC2RClient.exe /update` suit l'installation (et s'exécute aussi quand Office était déjà présent), pour ne pas livrer un poste en retard de plusieurs correctifs. `forceappshutdown=false` volontairement : le script pouvant être relancé sur un poste en service, forcer la fermeture d'Office y ferait perdre le travail en cours. Les versions avant/après sont journalisées.
   - **Commercial Vantage : saut fiabilisé** — l'étape n'est ignorée que si **trois conditions cumulatives** sont réunies : paquet trouvé, `Status` à `Ok`, et dossier d'installation réellement présent sur le disque. Le faux positif est l'erreur coûteuse ici — il ferait sauter l'installation sur un poste qui en a besoin. La version détectée est journalisée.
   - **Windows Update et BitLocker retirés du script** — ces deux domaines relèvent des stratégies du parc (Intune, GPO), et le chiffrement était déjà actif avant l'intervention de l'outil sur les postes observés. Le provisionnement passe de **10 à 8 étapes** et la grille de **11 à 9 jalons**. La vérification finale continue de **constater** l'état de BitLocker, en lecture seule : la fiche de remise reste une preuve de conformité, mais l'outil n'agit plus sur le chiffrement. Windows Update figure désormais dans les actions manuelles recommandées.
