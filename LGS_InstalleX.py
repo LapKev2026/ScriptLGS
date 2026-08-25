@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8-sig -*-
 """
-LGS InstalleX v1.2
+LGS InstalleX v1.3
 Provisionnement automatise des postes de travail LGS
 Conversion Python 3 / PyQt6
 © Copyright Groupe LGS — une Société IBM
@@ -9,7 +9,7 @@ Conversion Python 3 / PyQt6
 
 # Versionnage repris à 1.0 avec le passage de P.R.I.S.M à LGS InstalleX.
 # La lignée technique précédente s'arrêtait à 3.8.1 (cf. README, historique).
-INSTALLEX_VERSION = "1.2"   # ← incrémenter ici uniquement lors des releases
+INSTALLEX_VERSION = "1.3"   # ← incrémenter ici uniquement lors des releases
 
 
 # DOIT être avant tout autre import : les union types (X | Y), list[str],
@@ -375,7 +375,7 @@ except ImportError:
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QProgressBar, QTextEdit, QFrame,
-    QPushButton, QLineEdit, QCheckBox, QFormLayout, QMessageBox
+    QPushButton, QLineEdit, QCheckBox, QFormLayout, QMessageBox, QScrollArea
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QPointF, QSize
@@ -93798,6 +93798,40 @@ def icone_play(taille: int = 18, fond: str = CLR_OK) -> QIcon:
     return QIcon(px)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CATALOGUE DES TÂCHES (mode Personnalisation)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Permet de ne rejouer qu'une partie du provisionnement : réinstaller un seul
+# logiciel, ou reprendre une étape qui a échoué, sans repasser sur le reste.
+#
+# Chaque entrée : (clé, libellé, parent). Les tâches d'un parent sont les
+# sous-étapes de l'étape 6, qui installe plusieurs logiciels indépendants.
+#
+# Rien ici ne « défait » quoi que ce soit : les étapes non cochées sont
+# simplement sautées, et celles qui sont cochées commencent toutes par vérifier
+# ce qui est déjà en place. Relancer une tâche déjà faite est donc sans effet.
+TACHES = [
+    ("step1", "Dossier CAT sur le bureau",            None),
+    ("step2", "Extraction des fichiers embarqués",    None),
+    ("step3", "Bureau utilisateur",                   None),
+    ("step4", "Nom d'ordinateur",                     None),
+    ("step5", "Microsoft 365 Apps (+ mise à jour)",   None),
+    ("step6", "Logiciels",                            None),
+    ("firefox",        "Firefox",                     "step6"),
+    ("chrome",         "Google Chrome",               "step6"),
+    ("homepage",       "Page d'accueil www.lgs.com",  "step6"),
+    ("slack",          "Slack",                       "step6"),
+    ("box_for_office", "Box for Office",              "step6"),
+    ("box_tools",      "Box Tools",                   "step6"),
+    ("adobe",          "Adobe Acrobat Reader",        "step6"),
+    ("intel_dsa",      "Intel Driver & Support Assistant", "step6"),
+    ("nvidia",         "Pilote NVIDIA + NVIDIA App",  "step6"),
+    ("vantage",        "Lenovo Commercial Vantage",   "step6"),
+    ("step7", "Favoris navigateurs",                  None),
+    ("step8", "Configuration Windows (veille, régional)", None),
+    ("step9", "Windows Update",                       None),
+]
+
 STEPS = [
     "Diagnostic système",
     "Création des dossiers",
@@ -95308,6 +95342,15 @@ try {
                     self.log(f"  winget: {line.strip()}", "CMD")
         return code in SUCCESS_CODES
 
+    def _actif(self, cle: str) -> bool:
+        """La tâche `cle` doit-elle être exécutée ?
+
+        `machine_info['taches']` vaut None en mode normal — tout s'exécute. En
+        mode Personnalisation, il contient l'ensemble des clés retenues.
+        """
+        taches = self.machine_info.get("taches")
+        return taches is None or cle in taches
+
     def _soft_present(self, entry: dict) -> bool:
         """Un logiciel du catalogue LOGICIELS est-il déjà installé ?
 
@@ -95412,301 +95455,311 @@ try {
         self.step(6, "active", "Installation des logiciels...")
         self.log("INSTALLATIONS LOGICIELS", "SECTION")
 
-        # ── Firefox ───────────────────────────────────────────────────────────
-        self.log("Installation de Firefox...", "INFO")
-        ff = LOGICIELS["firefox"]
-        if self._soft_present(ff):
-            self.log("Firefox déjà installé.", "SKIP")
-        else:
-            # Méthode 1 : winget (préféré — gère les mises à jour auto)
-            ok = self._winget_install(ff["winget_id"], "Firefox")
-            # winget peut retourner 0 sans que le logiciel soit réellement présent :
-            # on confirme avant de conclure (cf. le cas observé sur Office).
-            if ok and not self._soft_present(ff):
-                self.log("Firefox — winget signale un succès mais rien d'installé.", "WARN")
-                ok = False
-            if not ok:
-                # Méthode 2 : MSI déployable
-                ok = self._install_from_url(
-                    "Firefox", ff["dl_url"], "Firefox_Setup.msi",
-                    ff["dl_args"], ff["paths"], reg_patterns=ff.get("reg_patterns")
-                )
-            if not ok:
-                # Méthode 3 : installeur .exe historique (si l'URL MSI a changé)
-                self._install_from_url(
-                    "Firefox (installeur .exe)", ff["dl_url_legacy"],
-                    "Firefox_Setup.exe", ff["dl_args_legacy"], ff["paths"],
-                    reg_patterns=ff.get("reg_patterns")
-                )
+        if self._actif("firefox"):
+            # ── Firefox ───────────────────────────────────────────────────────────
+            self.log("Installation de Firefox...", "INFO")
+            ff = LOGICIELS["firefox"]
+            if self._soft_present(ff):
+                self.log("Firefox déjà installé.", "SKIP")
+            else:
+                # Méthode 1 : winget (préféré — gère les mises à jour auto)
+                ok = self._winget_install(ff["winget_id"], "Firefox")
+                # winget peut retourner 0 sans que le logiciel soit réellement présent :
+                # on confirme avant de conclure (cf. le cas observé sur Office).
+                if ok and not self._soft_present(ff):
+                    self.log("Firefox — winget signale un succès mais rien d'installé.", "WARN")
+                    ok = False
+                if not ok:
+                    # Méthode 2 : MSI déployable
+                    ok = self._install_from_url(
+                        "Firefox", ff["dl_url"], "Firefox_Setup.msi",
+                        ff["dl_args"], ff["paths"], reg_patterns=ff.get("reg_patterns")
+                    )
+                if not ok:
+                    # Méthode 3 : installeur .exe historique (si l'URL MSI a changé)
+                    self._install_from_url(
+                        "Firefox (installeur .exe)", ff["dl_url_legacy"],
+                        "Firefox_Setup.exe", ff["dl_args_legacy"], ff["paths"],
+                        reg_patterns=ff.get("reg_patterns")
+                    )
 
-        # ── Google Chrome ─────────────────────────────────────────────────────
-        self.log("Installation de Google Chrome...", "INFO")
-        ch = LOGICIELS["chrome"]
-        if self._soft_present(ch):
-            self.log("Google Chrome déjà installé.", "SKIP")
-        else:
-            # Méthode 1 : winget
-            ok = self._winget_install(ch["winget_id"], "Chrome")
-            if ok and not self._soft_present(ch):
-                self.log("Chrome — winget signale un succès mais rien d'installé.", "WARN")
-                ok = False
-            if not ok:
-                # Méthode 2 : MSI Chrome Enterprise (portée machine déterministe)
-                ok = self._install_from_url(
-                    "Chrome", ch["dl_url"], "Chrome_Enterprise.msi",
-                    ch["dl_args"], ch["paths"], reg_patterns=ch.get("reg_patterns")
-                )
-            if not ok:
-                # Méthode 3 : installeur grand public (si l'URL MSI a changé)
-                self._install_from_url(
-                    "Chrome (installeur .exe)", ch["dl_url_legacy"],
-                    "Chrome_Installer.exe", ch["dl_args_legacy"], ch["paths"],
-                    reg_patterns=ch.get("reg_patterns")
-                )
+        if self._actif("chrome"):
+            # ── Google Chrome ─────────────────────────────────────────────────────
+            self.log("Installation de Google Chrome...", "INFO")
+            ch = LOGICIELS["chrome"]
+            if self._soft_present(ch):
+                self.log("Google Chrome déjà installé.", "SKIP")
+            else:
+                # Méthode 1 : winget
+                ok = self._winget_install(ch["winget_id"], "Chrome")
+                if ok and not self._soft_present(ch):
+                    self.log("Chrome — winget signale un succès mais rien d'installé.", "WARN")
+                    ok = False
+                if not ok:
+                    # Méthode 2 : MSI Chrome Enterprise (portée machine déterministe)
+                    ok = self._install_from_url(
+                        "Chrome", ch["dl_url"], "Chrome_Enterprise.msi",
+                        ch["dl_args"], ch["paths"], reg_patterns=ch.get("reg_patterns")
+                    )
+                if not ok:
+                    # Méthode 3 : installeur grand public (si l'URL MSI a changé)
+                    self._install_from_url(
+                        "Chrome (installeur .exe)", ch["dl_url_legacy"],
+                        "Chrome_Installer.exe", ch["dl_args_legacy"], ch["paths"],
+                        reg_patterns=ch.get("reg_patterns")
+                    )
 
-        # ── Pages d'accueil www.lgs.com ───────────────────────────────────────
-        self.log("Configuration page d'accueil www.lgs.com...", "INFO")
-        homepage = CONFIG.get("homepage") or "https://www.lgs.com"
-        homepage_keys = [
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome",
-             "HomepageLocation",    homepage,    winreg.REG_SZ),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome",
-             "HomepageIsNewTabPage", 0,          winreg.REG_DWORD),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome",
-             "RestoreOnStartup",    4,           winreg.REG_DWORD),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome\RestoreOnStartupURLs",
-             "1",                   homepage,    winreg.REG_SZ),
-            # Edge : « HomepageLocation » ne pilote que le BOUTON Accueil. La page
-            # d'ouverture exige RestoreOnStartup=4 (« ouvrir des pages précises »)
-            # et RestoreOnStartupURLs — Chrome les recevait déjà, pas Edge, d'où
-            # un Edge qui ne s'ouvrait pas sur la page LGS.
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
-             "HomepageLocation",    homepage,    winreg.REG_SZ),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
-             "HomepageIsNewTabPage", 0,          winreg.REG_DWORD),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
-             "RestoreOnStartup",    4,           winreg.REG_DWORD),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge\RestoreOnStartupURLs",
-             "1",                   homepage,    winreg.REG_SZ),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Mozilla\Firefox\Homepage",
-             "URL",                 homepage,    winreg.REG_SZ),
-        ]
-        reg_errors = 0
-        for hive, path, name, value, vtype in homepage_keys:
-            if not reg_set(hive, path, name, value, vtype):
-                self.log(f"Clé de registre non écrite : {path}\\{name}", "WARN")
-                reg_errors += 1
-        if reg_errors == 0:
-            self.log(f"Page d'accueil configurée : {homepage}", "OK")
-        else:
-            self.log(f"Page d'accueil : {reg_errors} clé(s) non écrite(s) — vérifier les droits.", "WARN")
+        if self._actif("homepage"):
+            # ── Pages d'accueil www.lgs.com ───────────────────────────────────────
+            self.log("Configuration page d'accueil www.lgs.com...", "INFO")
+            homepage = CONFIG.get("homepage") or "https://www.lgs.com"
+            homepage_keys = [
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome",
+                 "HomepageLocation",    homepage,    winreg.REG_SZ),
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome",
+                 "HomepageIsNewTabPage", 0,          winreg.REG_DWORD),
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome",
+                 "RestoreOnStartup",    4,           winreg.REG_DWORD),
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome\RestoreOnStartupURLs",
+                 "1",                   homepage,    winreg.REG_SZ),
+                # Edge : « HomepageLocation » ne pilote que le BOUTON Accueil. La page
+                # d'ouverture exige RestoreOnStartup=4 (« ouvrir des pages précises »)
+                # et RestoreOnStartupURLs — Chrome les recevait déjà, pas Edge, d'où
+                # un Edge qui ne s'ouvrait pas sur la page LGS.
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
+                 "HomepageLocation",    homepage,    winreg.REG_SZ),
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
+                 "HomepageIsNewTabPage", 0,          winreg.REG_DWORD),
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge",
+                 "RestoreOnStartup",    4,           winreg.REG_DWORD),
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Edge\RestoreOnStartupURLs",
+                 "1",                   homepage,    winreg.REG_SZ),
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Mozilla\Firefox\Homepage",
+                 "URL",                 homepage,    winreg.REG_SZ),
+            ]
+            reg_errors = 0
+            for hive, path, name, value, vtype in homepage_keys:
+                if not reg_set(hive, path, name, value, vtype):
+                    self.log(f"Clé de registre non écrite : {path}\\{name}", "WARN")
+                    reg_errors += 1
+            if reg_errors == 0:
+                self.log(f"Page d'accueil configurée : {homepage}", "OK")
+            else:
+                self.log(f"Page d'accueil : {reg_errors} clé(s) non écrite(s) — vérifier les droits.", "WARN")
 
-        # ── Slack ─────────────────────────────────────────────────────────────
-        self.log("Installation de Slack...", "INFO")
-        sl = LOGICIELS["slack"]
-        if self._soft_present(sl):
-            self.log("Slack déjà installé.", "SKIP")
-        else:
-            # Portée machine : winget sert alors le paquet MSIX de Slack,
-            # provisionné pour TOUS les profils — le bon comportement en
-            # provisionnement. (Vérifié : `winget show SlackTechnologies.Slack
-            # --scope machine` renvoie bien un installeur de type msix, et
-            # `--scope user` un SlackSetup.exe.)
-            #
-            # Sur les images où le déploiement AppX est restreint, ce MSIX est
-            # refusé avec -1978334957 (0x8A150113, « paquet non supporté par ce
-            # système »). _winget_install rebascule alors automatiquement sans
-            # --scope, ce qui donne le SlackSetup.exe : Slack est bien installé,
-            # mais pour le SEUL profil courant — d'où l'avertissement ci-dessous.
-            # scope=None : on laisse winget choisir l'installeur. Imposer la
-            # portée machine sert le MSIX, refusé par les images où le
-            # déploiement AppX est restreint (-1978334957).
-            ok = self._winget_install(sl["winget_id"], "Slack", scope=None)
-            # Slack s'enregistre avec un léger décalage après la fin de winget :
-            # la vérification immédiate le déclarait « introuvable » alors que la
-            # vérification finale, elle, le trouvait bien. On laisse jusqu'à 30 s.
-            for _ in range(6):
-                if self._soft_present(sl):
-                    break
-                time.sleep(5)
-
+        if self._actif("slack"):
+            # ── Slack ─────────────────────────────────────────────────────────────
+            self.log("Installation de Slack...", "INFO")
+            sl = LOGICIELS["slack"]
             if self._soft_present(sl):
-                # Distinguer MSIX (tous profils) et .exe (profil courant seul) :
-                # dans le 2e cas l'utilisateur final devra installer Slack lui-même.
-                # Les chemins classiques (%LOCALAPPDATA%\slack…) ne sont posés que
-                # par l'installeur .exe : un MSIX vit dans WindowsApps et n'en
-                # expose aucun. Leur présence signale donc l'installation .exe.
-                install_exe = any(Path(p).exists() for p in sl["paths"])
-                if install_exe:
+                self.log("Slack déjà installé.", "SKIP")
+            else:
+                # Portée machine : winget sert alors le paquet MSIX de Slack,
+                # provisionné pour TOUS les profils — le bon comportement en
+                # provisionnement. (Vérifié : `winget show SlackTechnologies.Slack
+                # --scope machine` renvoie bien un installeur de type msix, et
+                # `--scope user` un SlackSetup.exe.)
+                #
+                # Sur les images où le déploiement AppX est restreint, ce MSIX est
+                # refusé avec -1978334957 (0x8A150113, « paquet non supporté par ce
+                # système »). _winget_install rebascule alors automatiquement sans
+                # --scope, ce qui donne le SlackSetup.exe : Slack est bien installé,
+                # mais pour le SEUL profil courant — d'où l'avertissement ci-dessous.
+                # scope=None : on laisse winget choisir l'installeur. Imposer la
+                # portée machine sert le MSIX, refusé par les images où le
+                # déploiement AppX est restreint (-1978334957).
+                ok = self._winget_install(sl["winget_id"], "Slack", scope=None)
+                # Slack s'enregistre avec un léger décalage après la fin de winget :
+                # la vérification immédiate le déclarait « introuvable » alors que la
+                # vérification finale, elle, le trouvait bien. On laisse jusqu'à 30 s.
+                for _ in range(6):
+                    if self._soft_present(sl):
+                        break
+                    time.sleep(5)
+
+                if self._soft_present(sl):
+                    # Distinguer MSIX (tous profils) et .exe (profil courant seul) :
+                    # dans le 2e cas l'utilisateur final devra installer Slack lui-même.
+                    # Les chemins classiques (%LOCALAPPDATA%\slack…) ne sont posés que
+                    # par l'installeur .exe : un MSIX vit dans WindowsApps et n'en
+                    # expose aucun. Leur présence signale donc l'installation .exe.
+                    install_exe = any(Path(p).exists() for p in sl["paths"])
+                    if install_exe:
+                        self.log(
+                            "Slack installé, mais via l'installeur .exe : présent "
+                            "UNIQUEMENT pour la session courante. L'utilisateur final "
+                            "devra l'installer à sa première ouverture de session.",
+                            "WARN"
+                        )
+                    else:
+                        self.log("Slack installé (MSIX, tous les profils).", "OK")
+                elif ok:
                     self.log(
-                        "Slack installé, mais via l'installeur .exe : présent "
-                        "UNIQUEMENT pour la session courante. L'utilisateur final "
-                        "devra l'installer à sa première ouverture de session.",
-                        "WARN"
+                        "Slack — winget signale un succès mais Slack reste "
+                        "introuvable (ni chemin, ni registre, ni paquet MSIX).", "WARN"
                     )
                 else:
-                    self.log("Slack installé (MSIX, tous les profils).", "OK")
-            elif ok:
-                self.log(
-                    "Slack — winget signale un succès mais Slack reste "
-                    "introuvable (ni chemin, ni registre, ni paquet MSIX).", "WARN"
-                )
+                    self.log("Slack — installation non confirmée.", "WARN")
+
+        if self._actif("box_for_office"):
+            # ── Box for Office ────────────────────────────────────────────────────
+            self.log("Installation de Box for Office...", "INFO")
+            bfo = LOGICIELS["box_for_office"]
+            if self._soft_present(bfo):
+                self.log("Box for Office déjà installé.", "SKIP")
             else:
-                self.log("Slack — installation non confirmée.", "WARN")
+                ok = self._winget_install(bfo["winget_id"], "Box for Office")
+                if ok and not self._soft_present(bfo):
+                    self.log("Box for Office — winget signale un succès mais rien d'installé.", "WARN")
+                    ok = False
+                if not ok:
+                    self.log(
+                        "Box for Office — échec winget. "
+                        "Installez manuellement : https://www.box.com/resources/downloads", "WARN"
+                    )
 
-        # ── Box for Office ────────────────────────────────────────────────────
-        self.log("Installation de Box for Office...", "INFO")
-        bfo = LOGICIELS["box_for_office"]
-        if self._soft_present(bfo):
-            self.log("Box for Office déjà installé.", "SKIP")
-        else:
-            ok = self._winget_install(bfo["winget_id"], "Box for Office")
-            if ok and not self._soft_present(bfo):
-                self.log("Box for Office — winget signale un succès mais rien d'installé.", "WARN")
-                ok = False
-            if not ok:
-                self.log(
-                    "Box for Office — échec winget. "
-                    "Installez manuellement : https://www.box.com/resources/downloads", "WARN"
+        if self._actif("box_tools"):
+            # ── Box Tools ─────────────────────────────────────────────────────────
+            self.log("Installation de Box Tools...", "INFO")
+            bt = LOGICIELS["box_tools"]
+            if self._soft_present(bt):
+                self.log("Box Tools déjà installé.", "SKIP")
+            else:
+                # scope=None : Box Tools s'installe par utilisateur ; imposer la
+                # portée machine faisait échouer winget faute d'installeur applicable.
+                ok = self._winget_install(bt["winget_id"], "Box Tools", scope=None)
+                if ok and not self._soft_present(bt):
+                    self.log("Box Tools — winget signale un succès mais rien d'installé.", "WARN")
+                    ok = False
+                if not ok:
+                    self.log(
+                        "Box Tools — échec winget. "
+                        "Installez manuellement : https://www.box.com/resources/downloads", "WARN"
+                    )
+
+        if self._actif("adobe"):
+            # ── Adobe Acrobat Reader ──────────────────────────────────────────────
+            self.log("Installation d'Adobe Acrobat Reader...", "INFO")
+            adobe = LOGICIELS["adobe"]
+            if self._soft_present(adobe):
+                self.log("Adobe déjà installé.", "SKIP")
+            else:
+                ok = self._winget_install(adobe["winget_id"], "Adobe Acrobat Reader")
+                if ok and not self._soft_present(adobe):
+                    self.log("Adobe Reader — winget signale un succès mais rien d'installé.", "WARN")
+                    ok = False
+                if not ok:
+                    # Repli : API Adobe (endpoint non documenté — traité comme fragile).
+                    self._install_adobe_direct()
+
+        if self._actif("intel_dsa"):
+            # ── Intel DSA ─────────────────────────────────────────────────────────
+            self.log("Installation d'Intel Driver & Support Assistant...", "INFO")
+            dsa = LOGICIELS["intel_dsa"]
+
+            # Détection multicouche : exe, registre, service Windows
+            def _dsa_detected() -> bool:
+                return (
+                    any(Path(p).exists() for p in dsa["paths"])
+                    or is_installed_via_registry(dsa["reg_patterns"])
+                    or is_service_installed(dsa["service_name"])
                 )
 
-        # ── Box Tools ─────────────────────────────────────────────────────────
-        self.log("Installation de Box Tools...", "INFO")
-        bt = LOGICIELS["box_tools"]
-        if self._soft_present(bt):
-            self.log("Box Tools déjà installé.", "SKIP")
-        else:
-            # scope=None : Box Tools s'installe par utilisateur ; imposer la
-            # portée machine faisait échouer winget faute d'installeur applicable.
-            ok = self._winget_install(bt["winget_id"], "Box Tools", scope=None)
-            if ok and not self._soft_present(bt):
-                self.log("Box Tools — winget signale un succès mais rien d'installé.", "WARN")
-                ok = False
-            if not ok:
-                self.log(
-                    "Box Tools — échec winget. "
-                    "Installez manuellement : https://www.box.com/resources/downloads", "WARN"
-                )
-
-        # ── Adobe Acrobat Reader ──────────────────────────────────────────────
-        self.log("Installation d'Adobe Acrobat Reader...", "INFO")
-        adobe = LOGICIELS["adobe"]
-        if self._soft_present(adobe):
-            self.log("Adobe déjà installé.", "SKIP")
-        else:
-            ok = self._winget_install(adobe["winget_id"], "Adobe Acrobat Reader")
-            if ok and not self._soft_present(adobe):
-                self.log("Adobe Reader — winget signale un succès mais rien d'installé.", "WARN")
-                ok = False
-            if not ok:
-                # Repli : API Adobe (endpoint non documenté — traité comme fragile).
-                self._install_adobe_direct()
-
-        # ── Intel DSA ─────────────────────────────────────────────────────────
-        self.log("Installation d'Intel Driver & Support Assistant...", "INFO")
-        dsa = LOGICIELS["intel_dsa"]
-
-        # Détection multicouche : exe, registre, service Windows
-        def _dsa_detected() -> bool:
-            return (
-                any(Path(p).exists() for p in dsa["paths"])
-                or is_installed_via_registry(dsa["reg_patterns"])
-                or is_service_installed(dsa["service_name"])
-            )
-
-        if _dsa_detected():
-            self.log("Intel DSA déjà installé.", "SKIP")
-        elif dsa.get("winget_id") and self._winget_install(
-                dsa["winget_id"], "Intel DSA") and _dsa_detected():
-            # Méthode 1 : winget — paquet versionné et signé, sans dépendre d'une
-            # URL « toujours le dernier » dont la forme n'est pas garantie.
-            self.log("Intel DSA installé via winget.", "OK")
-        else:
-            # Méthode 2 : téléchargement direct sur dsadata.intel.com/installer
-            # (urllib suit la redirection), puis exécution avec -s -norestart.
-            if dsa.get("winget_id"):
-                self.log("Intel DSA — repli sur le téléchargement direct.", "INFO")
-            tmp = Path(tempfile.gettempdir()) / "Intel-DSA-Installer.exe"
-            try:
-                self.log("Téléchargement Intel DSA...", "CMD")
-                req = urllib.request.Request(
-                    dsa["dl_url"], headers={"User-Agent": "Mozilla/5.0"}
-                )
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    tmp.write_bytes(resp.read())
-
-                file_size = tmp.stat().st_size
-                if file_size < 100 * 1024:
-                    self.log(f"Intel DSA — fichier trop petit ({file_size} o), annulé.", "WARN")
-                    self.log(f"Installez manuellement : {dsa['dl_url_fallback']}", "WARN")
-                else:
-                    # SEC-2 — vérification Authenticode avant exécution
-                    sig_ok, sig_msg = verify_authenticode(tmp)
-                    if not sig_ok:
-                        # Signature invalide : on IGNORE uniquement Intel DSA, sans
-                        # interrompre le reste de l'étape 6 (NVIDIA, NVIDIA App,
-                        # Lenovo Vantage sont appelés APRÈS). L'ancien `return`
-                        # tuait toute l'étape et sautait la détection NVIDIA.
-                        self.log(f"Intel DSA — signature invalide : {sig_msg} — installation ignorée.", "FAIL")
-                    else:
-                        self.log(f"Intel DSA — {sig_msg}", "OK")
-                        self.log("Installation Intel DSA (1-2 min)...", "CMD")
-                        # Le code retour était ignoré : un refus des switches, un
-                        # blocage GPO ou une exigence de redémarrage passaient donc
-                        # inaperçus et ressortaient en simple « peut se terminer en
-                        # arrière-plan ». On le lit et on le journalise.
-                        code_dsa, out_dsa = run_cmd(
-                            [str(tmp)] + dsa["dl_args"], timeout=300
-                        )
-                        DSA_OK_CODES = (0, 3010, 1641)
-                        if code_dsa not in DSA_OK_CODES:
-                            self.log(
-                                f"Intel DSA — installeur terminé avec le code "
-                                f"{code_dsa}.", "WARN"
-                            )
-                            for line in (out_dsa or "").strip().splitlines()[:5]:
-                                if line.strip():
-                                    self.log(f"  DSA: {line.strip()}", "CMD")
-                        # Le service s'enregistre en arrière-plan. L'installeur
-                        # annonce 1-2 min : on attend donc jusqu'à 2 min (au lieu
-                        # de 30 s), ce qui évitait de conclure à un échec alors que
-                        # l'installation aboutissait juste après.
-                        for _ in range(24):
-                            if _dsa_detected():
-                                break
-                            time.sleep(5)
-                        if _dsa_detected():
-                            self.log("Intel DSA installé avec succès.", "OK")
-                        elif code_dsa in DSA_OK_CODES:
-                            self.log(
-                                "Intel DSA — installeur sorti sans erreur mais "
-                                "service absent après 2 min ; peut se terminer "
-                                "en arrière-plan.", "WARN"
-                            )
-                        else:
-                            self.log(
-                                f"Intel DSA — échec de l'installation "
-                                f"(code {code_dsa}).", "FAIL"
-                            )
-                            self.log(
-                                f"Installez manuellement : {dsa['dl_url_fallback']}",
-                                "WARN"
-                            )
-            except Exception as exc:
-                self.log(f"Intel DSA — erreur : {exc}", "FAIL")
-                self.log(f"Installez manuellement : {dsa['dl_url_fallback']}", "WARN")
-            finally:
+            if _dsa_detected():
+                self.log("Intel DSA déjà installé.", "SKIP")
+            elif dsa.get("winget_id") and self._winget_install(
+                    dsa["winget_id"], "Intel DSA") and _dsa_detected():
+                # Méthode 1 : winget — paquet versionné et signé, sans dépendre d'une
+                # URL « toujours le dernier » dont la forme n'est pas garantie.
+                self.log("Intel DSA installé via winget.", "OK")
+            else:
+                # Méthode 2 : téléchargement direct sur dsadata.intel.com/installer
+                # (urllib suit la redirection), puis exécution avec -s -norestart.
+                if dsa.get("winget_id"):
+                    self.log("Intel DSA — repli sur le téléchargement direct.", "INFO")
+                tmp = Path(tempfile.gettempdir()) / "Intel-DSA-Installer.exe"
                 try:
-                    tmp.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                    self.log("Téléchargement Intel DSA...", "CMD")
+                    req = urllib.request.Request(
+                        dsa["dl_url"], headers={"User-Agent": "Mozilla/5.0"}
+                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        tmp.write_bytes(resp.read())
 
-        # ── Pilote NVIDIA + NVIDIA App Entreprise (si GPU détecté) ─────────────
-        self._install_nvidia_driver()
-        self._install_nvidia_app()
+                    file_size = tmp.stat().st_size
+                    if file_size < 100 * 1024:
+                        self.log(f"Intel DSA — fichier trop petit ({file_size} o), annulé.", "WARN")
+                        self.log(f"Installez manuellement : {dsa['dl_url_fallback']}", "WARN")
+                    else:
+                        # SEC-2 — vérification Authenticode avant exécution
+                        sig_ok, sig_msg = verify_authenticode(tmp)
+                        if not sig_ok:
+                            # Signature invalide : on IGNORE uniquement Intel DSA, sans
+                            # interrompre le reste de l'étape 6 (NVIDIA, NVIDIA App,
+                            # Lenovo Vantage sont appelés APRÈS). L'ancien `return`
+                            # tuait toute l'étape et sautait la détection NVIDIA.
+                            self.log(f"Intel DSA — signature invalide : {sig_msg} — installation ignorée.", "FAIL")
+                        else:
+                            self.log(f"Intel DSA — {sig_msg}", "OK")
+                            self.log("Installation Intel DSA (1-2 min)...", "CMD")
+                            # Le code retour était ignoré : un refus des switches, un
+                            # blocage GPO ou une exigence de redémarrage passaient donc
+                            # inaperçus et ressortaient en simple « peut se terminer en
+                            # arrière-plan ». On le lit et on le journalise.
+                            code_dsa, out_dsa = run_cmd(
+                                [str(tmp)] + dsa["dl_args"], timeout=300
+                            )
+                            DSA_OK_CODES = (0, 3010, 1641)
+                            if code_dsa not in DSA_OK_CODES:
+                                self.log(
+                                    f"Intel DSA — installeur terminé avec le code "
+                                    f"{code_dsa}.", "WARN"
+                                )
+                                for line in (out_dsa or "").strip().splitlines()[:5]:
+                                    if line.strip():
+                                        self.log(f"  DSA: {line.strip()}", "CMD")
+                            # Le service s'enregistre en arrière-plan. L'installeur
+                            # annonce 1-2 min : on attend donc jusqu'à 2 min (au lieu
+                            # de 30 s), ce qui évitait de conclure à un échec alors que
+                            # l'installation aboutissait juste après.
+                            for _ in range(24):
+                                if _dsa_detected():
+                                    break
+                                time.sleep(5)
+                            if _dsa_detected():
+                                self.log("Intel DSA installé avec succès.", "OK")
+                            elif code_dsa in DSA_OK_CODES:
+                                self.log(
+                                    "Intel DSA — installeur sorti sans erreur mais "
+                                    "service absent après 2 min ; peut se terminer "
+                                    "en arrière-plan.", "WARN"
+                                )
+                            else:
+                                self.log(
+                                    f"Intel DSA — échec de l'installation "
+                                    f"(code {code_dsa}).", "FAIL"
+                                )
+                                self.log(
+                                    f"Installez manuellement : {dsa['dl_url_fallback']}",
+                                    "WARN"
+                                )
+                except Exception as exc:
+                    self.log(f"Intel DSA — erreur : {exc}", "FAIL")
+                    self.log(f"Installez manuellement : {dsa['dl_url_fallback']}", "WARN")
+                finally:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
-        # ── Lenovo Commercial Vantage (matériel Lenovo) ────────────────────────
-        self._install_commercial_vantage()
+        if self._actif("nvidia"):
+            # ── Pilote NVIDIA + NVIDIA App Entreprise (si GPU détecté) ─────────────
+            self._install_nvidia_driver()
+            self._install_nvidia_app()
+
+        if self._actif("vantage"):
+            # ── Lenovo Commercial Vantage (matériel Lenovo) ────────────────────────
+            self._install_commercial_vantage()
 
         self.step(6, "done", "Logiciels installés")
         self.progress(7, "Étape 7/10 — Favoris navigateurs")
@@ -97255,6 +97308,12 @@ try {
         try:
             for idx, fn in etapes:
                 self._check_stop()
+                # Mode Personnalisation : une étape non retenue est sautée, et
+                # sa case de progression passe en « ignorée » plutôt que de
+                # rester indéfiniment en attente.
+                if idx is not None and not self._actif(f"step{idx}"):
+                    self.step(idx, "done", "Non sélectionnée")
+                    continue
                 try:
                     fn()
                 except InterruptedError:
@@ -97720,7 +97779,57 @@ class SetupDialog(QWidget):
         self.chk_nouvelle_embauche.setChecked(bool(CONFIG.get("nouvelle_embauche")))
         form.addRow("", self.chk_nouvelle_embauche)
 
+        self.chk_perso = QCheckBox("Personnalisation — choisir les tâches à exécuter")
+        self.chk_perso.toggled.connect(self._basculer_perso)
+        form.addRow("", self.chk_perso)
+
         layout.addLayout(form)
+
+        # ── Liste des tâches (masquée tant que Personnalisation est décochée) ──
+        self.zone_perso = QWidget()
+        vperso = QVBoxLayout(self.zone_perso)
+        vperso.setContentsMargins(0, 0, 0, 0)
+        vperso.setSpacing(6)
+
+        aide = QLabel(
+            "Seules les tâches cochées seront exécutées. Rien n'est désinstallé : "
+            "les autres sont simplement ignorées."
+        )
+        aide.setWordWrap(True)
+        aide.setStyleSheet(f"color: {CLR_TEXT_MUTED}; font-size: 8pt;")
+        vperso.addWidget(aide)
+
+        barre = QHBoxLayout()
+        for libelle, valeur in (("Tout cocher", True), ("Tout décocher", False)):
+            b = QPushButton(libelle)
+            b.setFixedHeight(24)
+            b.clicked.connect(lambda _, v=valeur: self._cocher_tout(v))
+            barre.addWidget(b)
+        barre.addStretch()
+        vperso.addLayout(barre)
+
+        defilement = QScrollArea()
+        defilement.setWidgetResizable(True)
+        defilement.setMinimumHeight(240)
+        interieur = QWidget()
+        vint = QVBoxLayout(interieur)
+        vint.setContentsMargins(4, 4, 4, 4)
+        vint.setSpacing(2)
+
+        self.cases_taches = {}
+        for cle, libelle, parent in TACHES:
+            case = QCheckBox(("      " if parent else "") + libelle)
+            case.setChecked(True)
+            if not parent:
+                case.setStyleSheet(f"color: {CLR_TEXT_MAIN}; font-weight: bold;")
+            self.cases_taches[cle] = case
+            vint.addWidget(case)
+        vint.addStretch()
+        defilement.setWidget(interieur)
+        vperso.addWidget(defilement)
+
+        self.zone_perso.setVisible(False)
+        layout.addWidget(self.zone_perso)
 
         btn = QPushButton("  Démarrer la configuration")
         # Icône dessinée à l'exécution plutôt qu'un emoji : le rendu des emojis
@@ -97787,6 +97896,24 @@ class SetupDialog(QWidget):
             }}
         """)
 
+    def _basculer_perso(self, actif: bool):
+        """Affiche ou masque la liste des tâches, en ajustant la fenêtre.
+
+        Le dialogue est en taille fixe : sans agrandissement, la liste serait
+        rognée. On mémorise la hauteur d'origine pour la restaurer au décochage.
+        """
+        if not hasattr(self, "_hauteur_normale"):
+            self._hauteur_normale = self.height()
+        self.zone_perso.setVisible(actif)
+        self.setFixedSize(
+            self.width(),
+            self._hauteur_normale + (330 if actif else 0)
+        )
+
+    def _cocher_tout(self, valeur: bool):
+        for case in self.cases_taches.values():
+            case.setChecked(valeur)
+
     def _launch(self):
         name = self.txt_name.text().strip()
 
@@ -97805,9 +97932,24 @@ class SetupDialog(QWidget):
             self.txt_name.selectAll()
             return
 
+        # taches = None en mode normal (tout s'exécute) ; sinon l'ensemble des
+        # clés cochées. Une sélection vide n'aurait rien à faire : on le signale
+        # plutôt que de lancer un provisionnement qui ne ferait rien.
+        taches = None
+        if self.chk_perso.isChecked():
+            taches = {c for c, case in self.cases_taches.items() if case.isChecked()}
+            if not taches:
+                QMessageBox.warning(
+                    self, "Aucune tâche sélectionnée",
+                    "Cochez au moins une tâche, ou décochez « Personnalisation » "
+                    "pour exécuter le provisionnement complet."
+                )
+                return
+
         info = {
             "computer_name":     name,
             "nouvelle_embauche": self.chk_nouvelle_embauche.isChecked(),
+            "taches":            taches,
         }
         self.accepted.emit(info)
         self.hide()  # hide() au lieu de close() — évite lastWindowClosed avant que InstalleXWindow soit visible
