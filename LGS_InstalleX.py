@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8-sig -*-
 """
-LGS InstalleX v1.1
+LGS InstalleX v1.2
 Provisionnement automatise des postes de travail LGS
 Conversion Python 3 / PyQt6
 © Copyright Groupe LGS — une Société IBM
@@ -9,7 +9,7 @@ Conversion Python 3 / PyQt6
 
 # Versionnage repris à 1.0 avec le passage de P.R.I.S.M à LGS InstalleX.
 # La lignée technique précédente s'arrêtait à 3.8.1 (cf. README, historique).
-INSTALLEX_VERSION = "1.1"   # ← incrémenter ici uniquement lors des releases
+INSTALLEX_VERSION = "1.2"   # ← incrémenter ici uniquement lors des releases
 
 
 # DOIT être avant tout autre import : les union types (X | Y), list[str],
@@ -94807,6 +94807,77 @@ try {
     # ÉTAPE 5 — Microsoft Office
     # ─────────────────────────────────────────────────────────────────────────
 
+    # Client Click-to-Run : c'est lui qui déclenche une mise à jour d'Office,
+    # winget n'ayant aucune prise sur un Office installé en C2R.
+    OFFICE_C2R_CLIENT = (r"C:\Program Files\Common Files\microsoft shared"
+                         r"\ClickToRun\OfficeC2RClient.exe")
+    OFFICE_C2R_CONFIG = r"SOFTWARE\Microsoft\Office\ClickToRun\Configuration"
+
+    def _version_office(self) -> str:
+        """Version C2R actuellement installée, ou '' si illisible."""
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                self.OFFICE_C2R_CONFIG) as k:
+                return str(winreg.QueryValueEx(k, "VersionToReport")[0])
+        except OSError:
+            return ""
+
+    def _update_office(self):
+        """Lance une mise à jour de Microsoft 365 Apps après l'installation.
+
+        L'ODT et winget posent la version présente sur le CDN au moment du
+        déploiement ; une passe de mise à jour évite de livrer un poste déjà en
+        retard de plusieurs correctifs.
+
+        `forceappshutdown=false` volontairement : le script peut être relancé sur
+        un poste en service, et forcer la fermeture d'Office y ferait perdre le
+        travail en cours. Le cas échéant, la mise à jour s'appliquera à la
+        prochaine fermeture d'Office.
+
+        Étape purement additionnelle : tout échec est journalisé sans conséquence
+        sur le provisionnement.
+        """
+        client = Path(self.OFFICE_C2R_CLIENT)
+        if not client.is_file():
+            self.log(
+                "Office — client Click-to-Run introuvable, mise à jour ignorée.",
+                "WARN"
+            )
+            return
+
+        avant = self._version_office()
+        if avant:
+            self.log(f"Office — version installée : {avant}", "INFO")
+        self.log("Office — recherche des mises à jour...", "CMD")
+
+        code, out = run_cmd([
+            str(client), "/update", "user",
+            "updatepromptuser=false",
+            "forceappshutdown=false",
+            "displaylevel=false",
+        ], timeout=1800)
+
+        if code != 0:
+            self.log(
+                f"Office — mise à jour non lancée (code {code}) : "
+                f"{(out or '').strip()[:120]}", "WARN"
+            )
+            return
+
+        apres = self._version_office()
+        if avant and apres and apres != avant:
+            self.log(f"Office mis à jour : {avant} → {apres}", "OK")
+        elif apres and apres == avant:
+            # Le client rend la main dès que le téléchargement est lancé : une
+            # version inchangée ne prouve pas qu'il n'y avait rien à poser.
+            self.log(
+                f"Office — aucune mise à jour appliquée immédiatement "
+                f"(version {apres}) ; le téléchargement peut se poursuivre "
+                "en arrière-plan.", "OK"
+            )
+        else:
+            self.log("Office — mise à jour déclenchée.", "OK")
+
     def step5_office(self):
         self.step(5, "active", "Installation de Microsoft 365 Apps...")
         self.log("MICROSOFT 365 APPS", "SECTION")
@@ -94815,6 +94886,7 @@ try {
         already = any(Path(p).exists() for p in office_paths)
         if already:
             self.log("Microsoft 365 Apps déjà installé.", "SKIP")
+            self._update_office()
             self.step(5, "done", "Office déjà présent")
             self.progress(6, "Étape 6/9 — Logiciels")
             return
@@ -94825,6 +94897,7 @@ try {
         ok = self._install_office_winget()
         if ok:
             self.log("Microsoft 365 Apps installé via winget.", "OK")
+            self._update_office()
             self.step(5, "done", "Office installé")
             self.progress(6, "Étape 6/9 — Logiciels")
             return
@@ -94835,6 +94908,7 @@ try {
         ok = self._install_office_odt()
         if ok:
             self.log("Microsoft 365 Apps installé via ODT.", "OK")
+            self._update_office()
             self.step(5, "done", "Office installé")
         else:
             self.log(
@@ -94980,13 +95054,23 @@ try {
     # « Accès refusé » et une sortie VIDE — ni YES ni NO — ce qui serait relu
     # comme une absence. On l'encadre donc d'un try/catch et on retombe sur la
     # requête utilisateur courant, pour que la commande réponde toujours.
+    # Trois conditions CUMULATIVES avant de conclure à une présence, car un
+    # « déjà installé » erroné ferait sauter l'installation sur un poste qui en
+    # a besoin — l'erreur coûteuse ici est le faux positif, pas le faux négatif :
+    #   1. le paquet est trouvé (toutes ruches, puis utilisateur courant) ;
+    #   2. son Status vaut « Ok » — un paquet Modified ou Tampered ne compte pas ;
+    #   3. son dossier d'installation existe réellement sur le disque.
+    # La version est renvoyée avec la réponse, pour être journalisée.
     VANTAGE_CHECK_PS = (
         "$p = $null\n"
         "try { $p = Get-AppxPackage -AllUsers *LenovoSettingsforEnterprise* "
         "-ErrorAction Stop } catch { }\n"
         "if (-not $p) { try { $p = Get-AppxPackage *LenovoSettingsforEnterprise* "
         "-ErrorAction Stop } catch { } }\n"
-        "if ($p) { 'YES' } else { 'NO' }"
+        "if ($p) { $p = $p | Select-Object -First 1 }\n"
+        "if ($p -and $p.Status -eq 'Ok' -and $p.InstallLocation "
+        "-and (Test-Path $p.InstallLocation)) "
+        "{ Write-Output ('YES|' + $p.Version) } else { Write-Output 'NO' }"
     )
 
     # Microsoft Store — Lenovo COMMERCIAL Vantage (repli si le paquet de
@@ -96024,7 +96108,12 @@ try {
             ["powershell", "-NoProfile", "-Command", _check], timeout=30
         )
         if "YES" in (out_c or "").upper():
-            self.log("Commercial Vantage déjà installé.", "SKIP")
+            m_ver = re.search(r"YES\|([\d.]+)", out_c or "")
+            version = f" (version {m_ver.group(1)})" if m_ver else ""
+            self.log(
+                f"Commercial Vantage déjà installé{version} — paquet présent, "
+                "statut Ok, dossier vérifié.", "SKIP"
+            )
             return
 
         # 3. Localiser VantageInstaller.exe (paquet de déploiement Lenovo EXTRAIT).

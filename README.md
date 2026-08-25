@@ -4,7 +4,7 @@
 
 Outil de provisionnement automatisé des postes de travail pour les déploiements Groupe LGS — une société IBM.
 
-> Version applicative : **1.1** (Python / PyQt6) — versionnage repris à 1.0 lors du passage de P.R.I.S.M à LGS InstalleX ; la lignée technique précédente s'arrêtait à 3.8.1
+> Version applicative : **1.2** (Python / PyQt6) — versionnage repris à 1.0 lors du passage de P.R.I.S.M à LGS InstalleX ; la lignée technique précédente s'arrêtait à 3.8.1
 > Version parallèle maintenue : **PowerShell / WinForms** (lignée v3.x)
 > © Copyright Groupe LGS — une société IBM
 
@@ -370,7 +370,9 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 ### LGS InstalleX
 
 - **v1.0** *(2026-08-05)* — première version sous le nom LGS InstalleX. Reprend l'intégralité des fonctionnalités et correctifs de P.R.I.S.M 3.8.1 ; seuls le nom et le versionnage changent. Identifiants internes alignés (`INSTALLEX_VERSION`, `$env:INSTALLEX_NEW_NAME`, `InstalleX_crash.log`).
-- **Depuis la v1.1** *(le numéro de version n'a pas encore été incrémenté)* :
+- **v1.2 (courant)** *(2026-08-25)* :
+  - **Mise à jour d'Office après installation** — une passe `OfficeC2RClient.exe /update` suit l'installation (et s'exécute aussi quand Office était déjà présent), pour ne pas livrer un poste en retard de plusieurs correctifs. `forceappshutdown=false` volontairement : le script pouvant être relancé sur un poste en service, forcer la fermeture d'Office y ferait perdre le travail en cours. Les versions avant/après sont journalisées.
+  - **Commercial Vantage : saut fiabilisé** — l'étape n'est ignorée que si **trois conditions cumulatives** sont réunies : paquet trouvé, `Status` à `Ok`, et dossier d'installation réellement présent sur le disque. Le faux positif est l'erreur coûteuse ici — il ferait sauter l'installation sur un poste qui en a besoin. La version détectée est journalisée.
   - **Windows Update et BitLocker retirés du script** — ces deux domaines relèvent des stratégies du parc (Intune, GPO), et le chiffrement était déjà actif avant l'intervention de l'outil sur les postes observés. Le provisionnement passe de **10 à 8 étapes** et la grille de **11 à 9 jalons**. La vérification finale continue de **constater** l'état de BitLocker, en lecture seule : la fiche de remise reste une preuve de conformité, mais l'outil n'agit plus sur le chiffrement. Windows Update figure désormais dans les actions manuelles recommandées.
 - **v1.1** *(2026-08-21)* — sept ajouts fonctionnels, sans changement de comportement pour les étapes existantes :
   - **Configuration régionale** — fr-CA, date ISO `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time et position Canada, intégrés à l'étape 8 sans nouvelle étape numérotée.
