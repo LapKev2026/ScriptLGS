@@ -75,6 +75,8 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 - **Vérification des binaires avant exécution** — tout installeur téléchargé (repli hors winget : Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver, NVIDIA App) est contrôlé avant d'être lancé en administrateur : taille minimale et signature Authenticode de l'éditeur via la fonction `verify_authenticode` (`Get-AuthenticodeSignature`). Un fichier non signé, altéré ou non fiable est rejeté (fail-safe).
 - **Encodage UTF-8 forcé** — encodage UTF-8 (avec BOM) de bout en bout, incluant l'injection d'un préfixe console pour les appels PowerShell, afin d'éviter la corruption des accents et caractères spéciaux sur un Windows en français.
 - **Détection et confirmation uniformes** — le helper `_soft_present()` combine chemins de fichiers **et** clés Uninstall du registre (HKLM 64/32 bits + HKCU) pour toutes les applications ; la détection par chemin seule ratait les installations dans un dossier renommé d'une version à l'autre. Le même contrôle est rejoué **après** chaque installation : un `0` retourné par winget ne prouve pas que le logiciel est présent (cas constaté sur Office).
+- **Mise à jour d'Office après installation** — l'ODT comme winget posent la version présente sur le CDN au moment du déploiement ; sans passe de mise à jour, un poste neuf peut être livré avec plusieurs correctifs de retard. `_update_office()` appelle donc `OfficeC2RClient.exe /update` — winget n'ayant aucune prise sur un Office installé en Click-to-Run — après une installation **et** lorsque Office était déjà présent. `forceappshutdown=false` est volontaire : le script pouvant être relancé sur un poste en service, forcer la fermeture d'Office y ferait perdre le travail en cours ; la mise à jour s'applique alors à la prochaine fermeture.
+- **Saut de Commercial Vantage sous conditions strictes** — l'étape n'est ignorée que si le paquet est trouvé, que son `Status` vaut `Ok` et que son dossier d'installation existe réellement. L'asymétrie est assumée : un faux positif laisserait un poste sans Vantage, alors qu'un faux négatif se contente de réinstaller ce qui est déjà là.
 - **Support MSI et téléchargements résilients** — `_install_from_url()` télécharge via `download_file()` (contexte TLS + repli `curl.exe`/Schannel) et lance automatiquement les `.msi` par `msiexec /i /qn /norestart`, les `.exe` recevant leurs arguments propres. Le code de sortie de l'installeur est lu et journalisé.
 - **Installation applicative pilotée par les données** — le catalogue logiciel (`LOGICIELS`) décrit chaque application (chemins de détection, motifs registre, identifiant winget, URL et méthode de repli) ; l'étape 6 l'exploite pour uniformiser détection et installation. Un dossier compagnon `C:\LGS_Deploy` (`LGS_DEPLOY_DIR`, sous-dossiers `ODT\` et `CommercialVantage\`) héberge les paquets de déploiement entreprise : il est requis pour Lenovo Commercial Vantage, et sert de repli pour Microsoft 365 Apps.
 - **Microsoft 365 Apps — winget d'abord, ODT en repli** — le paquet winget `Microsoft.Office` est le *même* `setup.exe` Click-to-Run que l'ODT, simplement téléchargé depuis le CDN Microsoft. LGS InstalleX l'installe donc via winget en lui passant **son propre `configuration.xml`** (`--custom "/configure <xml>"`), ce qui conserve la maîtrise totale du déploiement (fr-CA, canal, RemoveMSI) tout en évitant d'avoir à pré-déposer `setup.exe` sur chaque poste. En cas d'échec (winget absent, CDN inaccessible, « installer hash mismatch » du manifeste), l'ODT prend le relais — et si `setup.exe` n'a pas été pré-déposé dans `C:\LGS_Deploy\ODT`, il est **téléchargé automatiquement depuis le CDN Microsoft** (`_download_odt_setup`). Le succès est vérifié par la présence réelle des binaires Office, car winget peut retourner `0` alors que Click-to-Run a échoué.
@@ -108,14 +110,14 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 3. **Bureau utilisateur** — le dossier `CAT` étant créé directement sur le bureau à l'étape 2, aucun raccourci n'est posé : il ne ferait que dupliquer l'icône. L'étape **supprime** au contraire le `CAT.lnk` laissé par les versions antérieures, pour que les postes déjà provisionnés se nettoient d'eux-mêmes.
 4. **Renommage machine** — `Set-ItemProperty` (registre) + `Win32_ComputerSystem.Rename()` (WMI), sans `Rename-Computer` ni signal de redémarrage, effectif au prochain démarrage. Nom passé via `$env:INSTALLEX_NEW_NAME` (anti-injection), après validation NetBIOS.
    - *4b — Nouvelle embauche (conditionnel)* : ouverture de Box IBM et attente de l'acceptation du User Agreement, uniquement si l'option « Nouvelle embauche » est cochée dans l'écran de configuration.
-5. **Microsoft 365 Apps** — via winget (`Microsoft.Office` + `configuration.xml` maison passé en `--custom /configure`), avec repli automatique sur l'Office Deployment Tool local (`setup.exe` dans `C:\LGS_Deploy\ODT\`) ; ignoré si Office est déjà présent.
+5. **Microsoft 365 Apps** — via winget (`Microsoft.Office` + `configuration.xml` maison passé en `--custom /configure`), avec repli automatique sur l'Office Deployment Tool local (`setup.exe` dans `C:\LGS_Deploy\ODT\`) ; l'installation est ignorée si Office est déjà présent. Dans **tous les cas**, une passe de mise à jour Click-to-Run suit.
 6. **Applications standard** — Firefox, Google Chrome, page d'accueil www.lgs.com (stratégies Chrome / Edge / Firefox), Slack, Box for Office, Box Tools, Adobe Acrobat Reader, Intel Driver & Support Assistant, **pilote NVIDIA + NVIDIA App (Entreprise)** si GPU NVIDIA détecté, **Lenovo Commercial Vantage** sur matériel Lenovo. Chaque application suit une chaîne de replis (voir ci-dessous) et son installation est confirmée avant de passer à la suivante.
 
 **Stratégie d'installation par application**
 
 | Application | Méthode primaire | Replis |
 |---|---|---|
-| Microsoft 365 Apps | winget + `configuration.xml` LGS | ODT local, puis ODT téléchargé du CDN |
+| Microsoft 365 Apps | winget + `configuration.xml` LGS, puis mise à jour C2R | ODT local, puis ODT téléchargé du CDN |
 | Slack | winget **sans `--scope`** — winget choisit l'installeur exploitable | — (le MSI `slack.com/ssb` redirige vers un fichier absent du CDN) |
 | Google Chrome | winget | MSI Chrome Enterprise, puis installeur `.exe` |
 | Firefox | winget **`Mozilla.Firefox.fr`** (paquet français) | MSI `lang=fr`, puis installeur `.exe` `lang=fr` |
@@ -225,18 +227,18 @@ L'ensemble de la documentation est destiné à la fois à l'usage opérationnel 
 
 ## 5. Interaction proactive et continue avec l'équipe de sécurité IBM
 
-LGS InstalleX effectue des opérations à privilèges élevés (exécution en administrateur, écriture registre, chiffrement BitLocker, jonction d'identité, installation logicielle). À ce titre, l'engagement avec l'équipe de sécurité IBM fait partie intégrante du cycle de vie et non d'une étape finale.
+LGS InstalleX effectue des opérations à privilèges élevés (exécution en administrateur, écriture registre, jonction d'identité, installation logicielle). À ce titre, l'engagement avec l'équipe de sécurité IBM fait partie intégrante du cycle de vie et non d'une étape finale.
 
 **Principes d'engagement**
 
-- **Proactivité** — l'équipe de sécurité est sollicitée dès la conception des fonctionnalités sensibles (élévation, BitLocker, gestion de la clé de récupération), et non uniquement au moment de la mise en production.
+- **Proactivité** — l'équipe de sécurité est sollicitée dès la conception des fonctionnalités sensibles (élévation, jonction d'identité, exécution de binaires téléchargés), et non uniquement au moment de la mise en production.
 - **Continuité** — chaque évolution touchant à un domaine sensible (nouvelle étape, changement de comportement d'élévation, gestion des secrets) déclenche une revue.
 - **Traçabilité** — les échanges, recommandations et suites données sont consignés dans le registre ci-dessous.
 
 **Domaines soumis à revue de sécurité**
 
 - Mécanisme d'élévation UAC et surface d'exécution en administrateur
-- Gestion de la clé de récupération BitLocker (jamais journalisée, sauvegarde vers Entra ID)
+- État du chiffrement BitLocker — **constaté uniquement**, l'outil n'agit plus dessus et ne manipule aucune clé
 - Manipulation des identités (jonction Entra ID)
 - Intégrité des installeurs téléchargés (signature Authenticode via `Get-AuthenticodeSignature` + contrôle de taille) avant exécution en administrateur
 - Politique d'exécution PowerShell (`RemoteSigned`) et prévention de l'injection lors du renommage (nom via variable d'environnement, validation NetBIOS)
