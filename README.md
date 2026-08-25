@@ -296,7 +296,7 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 | Défaut | Correction | Commit |
 |---|---|---|
-| Edge ne s'ouvrait pas sur `www.lgs.com`. Seuls `HomepageLocation` et `HomepageIsNewTabPage` lui étaient posés — or `HomepageLocation` ne pilote que le **bouton Accueil**, pas la page d'ouverture. Chrome recevait bien les quatre clés nécessaires, Edge seulement deux | Ajout de `RestoreOnStartup` à `4` (« ouvrir des pages précises ») et de `RestoreOnStartupURLs\1` pour Edge, à l'identique de Chrome | `—` |
+| Edge ne s'ouvrait pas sur `www.lgs.com`. Seuls `HomepageLocation` et `HomepageIsNewTabPage` lui étaient posés — or `HomepageLocation` ne pilote que le **bouton Accueil**, pas la page d'ouverture. Chrome recevait bien les quatre clés nécessaires, Edge seulement deux | Ajout de `RestoreOnStartup` à `4` (« ouvrir des pages précises ») et de `RestoreOnStartupURLs\1` pour Edge, à l'identique de Chrome | `3ae6813` |
 
 ### 2026-08-24
 
