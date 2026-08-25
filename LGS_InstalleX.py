@@ -93808,8 +93808,6 @@ STEPS = [
     "Logiciels (Firefox, Chrome…)",
     "Favoris navigateurs",
     "Configuration Windows",
-    "Windows Update",
-    "BitLocker → Entra ID",
 ]
 
 # ─── CHEMINS DE DÉTECTION ET IDS WINGET ───────────────────────────────────────
@@ -94388,7 +94386,6 @@ class InstallWorker(QThread):
         self._winget_ok: bool = False
         # Drapeaux de redémarrage, consolidés par _check_reboot_required().
         self._renamed: bool = False
-        self._reboot_pending_seen: bool = False
         # Inventaire matériel, rempli par log_inventory() au début de run().
         # Conservé en mémoire pour un futur rapport de provisioning.
         self.inventory: dict = {}
@@ -94613,7 +94610,7 @@ class InstallWorker(QThread):
             self.log(f"Erreur création dossier CAT : {exc}", "FAIL")
 
         self.step(1, "done", "Dossier CAT prêt")
-        self.progress(2, "Étape 2/11 — Fichiers de documentation")
+        self.progress(2, "Étape 2/9 — Fichiers de documentation")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ÉTAPE 2 — Fichiers de documentation (embedded)
@@ -94635,7 +94632,7 @@ class InstallWorker(QThread):
                 self.log(f"Erreur extraction {nom} : {exc}", "FAIL")
 
         self.step(2, "done", f"{len(FICHIERS_EMBARQUES)} fichier(s) extraits")
-        self.progress(3, "Étape 3/11 — Bureau utilisateur")
+        self.progress(3, "Étape 3/9 — Bureau utilisateur")
 
 
     def step3_shortcuts(self):
@@ -94660,7 +94657,7 @@ class InstallWorker(QThread):
             self.log("Dossier CAT accessible directement sur le bureau.", "INFO")
 
         self.step(3, "done", "Bureau vérifié")
-        self.progress(4, "Étape 4/11 — Nom d'ordinateur")
+        self.progress(4, "Étape 4/9 — Nom d'ordinateur")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ÉTAPE 4 — Nom d'ordinateur
@@ -94738,7 +94735,7 @@ try {
             self.log("Aucun nouveau nom fourni — étape ignorée.", "SKIP")
 
         self.step(4, "done", f"Nom : {new_name or current}")
-        self.progress(5, "Étape 5/11 — Microsoft Office")
+        self.progress(5, "Étape 5/9 — Microsoft Office")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ÉTAPE 4b — Nouvelle embauche : Box User Agreement
@@ -94819,7 +94816,7 @@ try {
         if already:
             self.log("Microsoft 365 Apps déjà installé.", "SKIP")
             self.step(5, "done", "Office déjà présent")
-            self.progress(6, "Étape 6/11 — Logiciels")
+            self.progress(6, "Étape 6/9 — Logiciels")
             return
 
         # 1) winget d'abord : aucun fichier à pré-déposer, setup.exe téléchargé
@@ -94829,7 +94826,7 @@ try {
         if ok:
             self.log("Microsoft 365 Apps installé via winget.", "OK")
             self.step(5, "done", "Office installé")
-            self.progress(6, "Étape 6/11 — Logiciels")
+            self.progress(6, "Étape 6/9 — Logiciels")
             return
 
         # 2) Repli ODT local — utile si winget est absent, si le poste n'a pas
@@ -94846,7 +94843,7 @@ try {
             )
             self.step(5, "done", "Office : échec (manuel requis)")
 
-        self.progress(6, "Étape 6/11 — Logiciels")
+        self.progress(6, "Étape 6/9 — Logiciels")
 
     def _install_office_winget(self) -> bool:
         """Installe Microsoft 365 Apps via winget, en lui passant NOTRE configuration.xml.
@@ -95619,7 +95616,7 @@ try {
         self._install_commercial_vantage()
 
         self.step(6, "done", "Logiciels installés")
-        self.progress(7, "Étape 7/11 — Favoris navigateurs")
+        self.progress(7, "Étape 7/9 — Favoris navigateurs")
 
     @staticmethod
     def _ps_encoded(script: str) -> list[str]:
@@ -96196,7 +96193,7 @@ try {
         self._write_firefox_bookmarks()
 
         self.step(7, "done", "Favoris navigateurs configurés")
-        self.progress(8, "Étape 8/11 — Configuration Windows")
+        self.progress(8, "Étape 8/9 — Configuration Windows")
 
     def _write_chromium_bookmarks(self, user_data: str, proc_name: str,
                                   label: str, bar_reg: tuple):
@@ -96542,646 +96539,8 @@ try {
         # Restauration veille : valeurs exactes sauvegardées au démarrage
         self._restore_power_settings()
 
-        self.step(8, "done", "Configuration Windows terminée")
-        self.progress(9, "Étape 9/11 — Windows Update")
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # ÉTAPE 9 — Windows Update
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # Budget de temps accordé à Windows Update, en secondes. Passé ce délai on
-    # passe à l'étape suivante : les mises à jour restantes se poseront d'elles-
-    # mêmes après la remise du poste, alors qu'un technicien immobilisé une ou
-    # deux heures devant la barre de progression, non. Le budget couvre l'étape
-    # ENTIÈRE : ce qui reste après PSWindowsUpdate est ce dont dispose le repli
-    # WUA, pour que le total ne dérive pas.
-    WU_BUDGET_S = 600   # 10 minutes
-
-    def step9_windows_update(self):
-        self.step(9, "active", "Recherche des mises à jour...")
-        self.log("WINDOWS UPDATE", "SECTION")
-        wu_debut = time.monotonic()
-
-        # ── Redémarrage en attente : on le SIGNALE mais on tente quand même ───
-        #
-        # Historique : cette détection provoquait un `return` immédiat, donc un
-        # abandon pur et simple de Windows Update. C'était contre-productif pour
-        # deux raisons.
-        #
-        # 1) La condition est très largement AUTO-INFLIGÉE. L'étape 9 s'exécute
-        #    après l'installation d'Office (étape 5), des logiciels et pilotes
-        #    (étape 6) et de la configuration Windows (étape 8) — or ces
-        #    installations posent précisément un redémarrage en attente. Le code
-        #    accepte d'ailleurs 3010 comme succès, et 3010 signifie « succès,
-        #    redémarrage requis ». Le script créait donc lui-même la condition
-        #    qui le faisait renoncer, et Windows Update ne tournait quasiment
-        #    jamais. (Mesuré sur un poste provisionné : 3 des 4 indicateurs
-        #    étaient présents.)
-        #
-        # 2) La prémisse est trop stricte. Un redémarrage en attente ne bloque
-        #    pas Windows Update en général — seulement certaines opérations de
-        #    servicing. PendingFileRenameOperations en particulier est posé par
-        #    quasiment tous les installeurs et ne bloque pratiquement jamais.
-        #
-        # On journalise donc l'état, on mémorise le besoin de redémarrage pour le
-        # bilan final, et on TENTE la mise à jour. Si Windows la refuse vraiment,
-        # le traitement d'erreur plus bas (PSWU_FAIL contenant « reboot » /
-        # « restart » / « pending ») intercepte le cas et sort proprement : au
-        # pire on retombe sur le comportement précédent, après un essai.
-        reboot_pending_keys = [
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"),
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"),
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\PackagesPending"),
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SYSTEM\CurrentControlSet\Control\Session Manager"),  # PendingFileRenameOperations
-        ]
-        reboot_required = False
-        for hive, path in reboot_pending_keys[:3]:  # les 3 premières sont booléennes (clé présente = reboot)
-            try:
-                with winreg.OpenKey(hive, path):
-                    reboot_required = True
-                    break
-            except OSError:
-                continue
-
-        # Cas spécial : PendingFileRenameOperations dans Session Manager
-        if not reboot_required:
-            try:
-                with winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    r"SYSTEM\CurrentControlSet\Control\Session Manager"
-                ) as key:
-                    val, _ = winreg.QueryValueEx(key, "PendingFileRenameOperations")
-                    if val:
-                        reboot_required = True
-            except OSError:
-                pass
-
-        if reboot_required:
-            # Mémorisé pour le bilan final (_check_reboot_required), qui
-            # annonçait « aucun redémarrage nécessaire » malgré ce constat.
-            self._reboot_pending_seen = True
-            self.log(
-                "Redémarrage en attente détecté (probablement dû aux installations "
-                "des étapes précédentes). Windows Update est tenté malgré tout.", "WARN"
-            )
-
-        # Méthode 1 : PSWindowsUpdate via PowerShell (UTF-8 forcé via chcp)
-        ps_script = r"""
-$OutputEncoding = [System.Text.Encoding]::UTF8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$ErrorActionPreference = 'Stop'
-$prevPolicy = $null
-try {
-    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers -EA SilentlyContinue | Out-Null
-    # Mémoriser la politique PSGallery : le poste livré ne doit pas rester avec
-    # un dépôt marqué Trusted (elle est restaurée dans le finally).
-    $prevPolicy = (Get-PSRepository -Name PSGallery -EA SilentlyContinue).InstallationPolicy
-    if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
-        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -EA SilentlyContinue
-        Install-Module -Name PSWindowsUpdate -Force -Scope AllUsers -AllowClobber -Repository PSGallery -EA Stop | Out-Null
-    }
-    Import-Module PSWindowsUpdate -Force -EA Stop
-
-    # Enregistrer le service Microsoft Update : apporte les correctifs Office et
-    # les pilotes, absents du service Windows Update seul.
-    try {
-        $sm = New-Object -ComObject Microsoft.Update.ServiceManager
-        $sm.AddService2('7971f918-a847-4430-9279-4a52d1efe18d', 7, '') | Out-Null
-        Write-Host "INFO: Service Microsoft Update enregistre (Office + pilotes)"
-    } catch {
-        Write-Host "INFO: Microsoft Update non enregistre - $($_.Exception.Message)"
-    }
-
-    # Boucle multi-passes : Windows Update revele souvent de nouvelles MAJ une
-    # fois les precedentes posees. On s'arrete des qu'il n'y a plus rien, qu'un
-    # redemarrage est requis, ou au bout de 3 passes.
-    $total = 0
-    for ($pass = 1; $pass -le 3; $pass++) {
-        # UNE seule commande recherche ET installe (-Install) : l'ancien code
-        # enchainait Get-WindowsUpdate puis Install-WindowsUpdate, soit deux
-        # balayages complets de Windows Update.
-        $res = @(Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -Install -IgnoreReboot -EA Stop)
-        if ($res.Count -eq 0) {
-            if ($pass -eq 1) { Write-Host "DONE: Systeme deja a jour" }
-            else { Write-Host "DONE: $total mise(s) a jour installee(s)" }
-            break
-        }
-        # Get-WindowsUpdate -Install emet un objet par mise a jour ET PAR ETAPE
-        # (recherche, telechargement, installation), et une meme mise a jour peut
-        # etre proposee par plusieurs services depuis qu'on enregistre Microsoft
-        # Update. Sans dedoublonnage, un poste avec 23 mises a jour en annoncait
-        # 75 et les listait trois fois. On compte donc des TITRES DISTINCTS.
-        $titres = @($res | ForEach-Object { $_.Title } |
-                    Where-Object { $_ } | Select-Object -Unique)
-        $titres | ForEach-Object { Write-Host "UPDATE: $_" }
-        $total += $titres.Count
-        Write-Host "INFO: Passe $pass - $($titres.Count) mise(s) a jour posee(s)"
-        $needReboot = $false
-        try { $needReboot = [bool](Get-WURebootStatus -Silent) } catch { }
-        if ($needReboot) {
-            Write-Host "REBOOT: $total mise(s) a jour installee(s)"
-            break
-        }
-        if ($pass -eq 3) { Write-Host "DONE: $total mise(s) a jour installee(s)" }
-    }
-} catch {
-    Write-Host "PSWU_FAIL: $($_.Exception.Message)"
-} finally {
-    if ($prevPolicy -and $prevPolicy -ne 'Trusted') {
-        Set-PSRepository -Name PSGallery -InstallationPolicy $prevPolicy -EA SilentlyContinue
-    }
-}
-"""
-        # Lancer un heartbeat dans un thread secondaire : indique à l'opérateur
-        # que l'étape est toujours active pendant le long silence de Windows Update.
-        _wupdate_stop = threading.Event()
-        def _heartbeat():
-            mins = 0
-            while not _wupdate_stop.wait(60):
-                mins += 1
-                self.log(f"Windows Update en cours… ({mins} min écoulée(s))", "INFO")
-        _hb = threading.Thread(target=_heartbeat, daemon=True)
-        _hb.start()
-
-        # SEC-3 : RemoteSigned — les scripts PS système (PSGallery, WUA) sont
-        # signés par Microsoft et s'exécutent sans Bypass.
-        code, out = run_cmd([
-            "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
-            "-Command", "$OutputEncoding=[System.Text.Encoding]::UTF8; " + ps_script
-        ], timeout=self.WU_BUDGET_S)
-
-        _wupdate_stop.set()
-
-        # Budget épuisé : on n'enchaîne pas sur le repli WUA, on passe à la suite.
-        # run_cmd renvoie -1 et un message « Délai dépassé » lorsqu'il tue le
-        # processus au timeout.
-        if code == -1 and "Délai dépassé" in (out or ""):
-            self.log(
-                f"Windows Update — délai de {self.WU_BUDGET_S // 60} min atteint ; "
-                "les mises à jour restantes se poursuivront en arrière-plan après "
-                "la remise du poste.", "WARN"
-            )
-            self.step(9, "done", f"Interrompu après {self.WU_BUDGET_S // 60} min")
-            self.progress(10, "Étape 10/11 — BitLocker + Entra ID")
-            return
-
-        # Filet de sécurité : même dédoublonné côté PowerShell, on ne journalise
-        # jamais deux fois le même titre.
-        titres_vus = set()
-        pswu_failed = False
-        for line in out.splitlines():
-            line = line.strip()
-            if line.startswith("UPDATE:"):
-                titre = line[7:].strip()
-                if titre in titres_vus:
-                    continue
-                titres_vus.add(titre)
-                self.log(f"Mise à jour : {titre}", "INFO")
-            elif line.startswith("INFO:"):
-                self.log(line[5:].strip(), "INFO")
-            elif line.startswith("REBOOT:"):
-                # Le cycle s'est arrêté sur un redémarrage requis : le signaler au
-                # bilan final, qui annonçait sinon « aucun redémarrage nécessaire ».
-                self._reboot_pending_seen = True
-                self.log(f"{line[7:].strip()} — redémarrage requis pour continuer.", "WARN")
-            elif line.startswith("DONE:"):
-                self.log(line[5:].strip(), "OK")
-            elif line.startswith("PSWU_FAIL:"):
-                msg = line[10:].strip().lower()
-                pswu_failed = True
-                # PSWindowsUpdate peut retourner "reboot required" dans son exception
-                if any(k in msg for k in ("reboot", "restart", "redémarr", "pending")):
-                    self.log(
-                        "PSWindowsUpdate : redémarrage requis avant de continuer les MAJ.", "WARN"
-                    )
-                    self.step(9, "done", "⚠️ Redémarrage requis — MAJ au prochain boot")
-                    self.progress(10, "Étape 10/11 — BitLocker + Entra ID")
-                    return
-                else:
-                    self.log("PSWindowsUpdate indisponible — fallback WUA...", "WARN")
-
-        if pswu_failed or code != 0:
-            # Fallback : Windows Update Agent natif (COM via PowerShell)
-            wua_script = r"""
-$OutputEncoding = [System.Text.Encoding]::UTF8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-try {
-    $session = New-Object -ComObject Microsoft.Update.Session
-
-    # Enregistrer Microsoft Update (Office + pilotes) et cibler ce service.
-    $svcId = '7971f918-a847-4430-9279-4a52d1efe18d'
-    $useMU = $false
-    try {
-        $sm = New-Object -ComObject Microsoft.Update.ServiceManager
-        $sm.AddService2($svcId, 7, '') | Out-Null
-        $useMU = $true
-        Write-Host "INFO: Service Microsoft Update enregistre (Office + pilotes)"
-    } catch {
-        Write-Host "INFO: Microsoft Update non enregistre - $($_.Exception.Message)"
-    }
-
-    $total = 0
-    for ($pass = 1; $pass -le 3; $pass++) {
-        $searcher = $session.CreateUpdateSearcher()
-        if ($useMU) { $searcher.ServiceID = $svcId; $searcher.ServerSelection = 3 }
-        # Plus de filtre Type='Software' : il excluait TOUS les pilotes proposes
-        # par Windows Update.
-        $result = $searcher.Search("IsInstalled=0 and IsHidden=0")
-        if ($result.Updates.Count -eq 0) {
-            if ($pass -eq 1) { Write-Host "DONE: Systeme deja a jour (WUA)" }
-            else { Write-Host "DONE: $total mise(s) a jour installee(s) (WUA)" }
-            break
-        }
-        # Un titre n'est journalise qu'une fois (cf. dedoublonnage cote
-        # PSWindowsUpdate), mais AcceptEula est appele sur CHAQUE objet : ce sont
-        # des mises a jour distinctes, meme si leur libelle est identique.
-        $vus = @{}
-        foreach ($u in $result.Updates) {
-            if (-not $vus.ContainsKey($u.Title)) {
-                $vus[$u.Title] = $true
-                Write-Host "UPDATE: $($u.Title)"
-            }
-            # Accepter le CLUF : sans cela toute MAJ qui en exige un echoue
-            # silencieusement (l'ancien code ne le faisait jamais).
-            if (-not $u.EulaAccepted) { try { $u.AcceptEula() } catch { } }
-        }
-        $dl = $session.CreateUpdateDownloader()
-        $dl.Updates = $result.Updates
-        $dl.Download() | Out-Null
-        $inst = $session.CreateUpdateInstaller()
-        $inst.Updates = $result.Updates
-        $r = $inst.Install()
-        $total += $result.Updates.Count
-        # OperationResultCode : 2=Succeeded 3=SucceededWithErrors 4=Failed 5=Aborted
-        Write-Host "RESULT: pass=$pass code=$($r.ResultCode) reboot=$($r.RebootRequired) count=$($result.Updates.Count)"
-        if ($r.ResultCode -eq 4 -or $r.ResultCode -eq 5) { break }
-        if ($r.RebootRequired) { break }
-        if ($pass -eq 3) { Write-Host "DONE: $total mise(s) a jour installee(s) (WUA)" }
-    }
-} catch {
-    Write-Host "FAIL: $($_.Exception.Message)"
-}
-"""
-            _wua_stop = threading.Event()
-            def _heartbeat_wua():
-                mins = 0
-                while not _wua_stop.wait(60):
-                    mins += 1
-                    self.log(f"Windows Update (WUA) en cours… ({mins} min écoulée(s))", "INFO")
-            _hb2 = threading.Thread(target=_heartbeat_wua, daemon=True)
-            _hb2.start()
-
-            # Le repli n'obtient que ce qui reste du budget de l'étape, avec un
-            # plancher de 60 s pour lui laisser au moins le temps de démarrer.
-            reste = max(60, int(self.WU_BUDGET_S - (time.monotonic() - wu_debut)))
-            self.log(f"Repli WUA — {reste // 60} min restantes sur le budget.", "INFO")
-            code2, out2 = run_cmd([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
-                "-Command", wua_script
-            ], timeout=reste)
-
-            _wua_stop.set()
-
-            # OperationResultCode de l'API Windows Update. L'ancien code lisait
-            # 4 comme « SucceededWithErrors / redémarrage requis » : en réalité
-            # 4 = Échec et 5 = Abandonné, donc des échecs étaient journalisés en
-            # simple WARN de redémarrage, et 3 passait pour un succès complet.
-            WUA_RESULT = {
-                0: ("WARN", "non démarré"),
-                1: ("WARN", "encore en cours"),
-                2: ("OK",   "réussi"),
-                3: ("WARN", "réussi avec erreurs"),
-                4: ("FAIL", "échec"),
-                5: ("FAIL", "abandonné"),
-            }
-            for line in out2.splitlines():
-                line = line.strip()
-                if line.startswith("UPDATE:"):
-                    titre = line[7:].strip()
-                    if titre in titres_vus:
-                        continue
-                    titres_vus.add(titre)
-                    self.log(f"Mise à jour : {titre}", "INFO")
-                elif line.startswith("INFO:"):
-                    self.log(line[5:].strip(), "INFO")
-                elif line.startswith("RESULT:"):
-                    m = re.search(r"pass=(\d+)\s+code=(\d+)\s+reboot=(\w+)\s+count=(\d+)", line)
-                    if m:
-                        p, rc, rb, cnt = (int(m.group(1)), int(m.group(2)),
-                                          m.group(3).lower() == "true", int(m.group(4)))
-                        lvl, label = WUA_RESULT.get(rc, ("WARN", f"code {rc}"))
-                        self.log(
-                            f"Passe {p} — {cnt} mise(s) à jour : {label}.", lvl
-                        )
-                        if lvl != "OK":
-                            self.log(
-                                "Vérifier l'historique dans Paramètres > Windows Update.",
-                                "WARN"
-                            )
-                        if rb:
-                            self._reboot_pending_seen = True
-                            self.log("Windows Update : redémarrage requis.", "WARN")
-                    else:
-                        self.log(line, "INFO")
-                elif line.startswith("DONE:"):
-                    self.log(line[5:].strip(), "OK")
-                elif line.startswith("FAIL:"):
-                    msg = line[5:].strip().lower()
-                    if any(k in msg for k in ("reboot", "restart", "pending")):
-                        self.log("WUA : redémarrage requis avant de continuer les MAJ.", "WARN")
-                        self.step(9, "done", "⚠️ Redémarrage requis — MAJ au prochain boot")
-                        self.progress(10, "Étape 10/11 — BitLocker + Entra ID")
-                        return
-                    self.log(f"Windows Update WUA : {line[5:].strip()}", "FAIL")
-                    self.log("Lancez Windows Update manuellement : Paramètres > Windows Update", "WARN")
-
-        self.step(9, "done", "Windows Update terminé")
-        self.progress(10, "Étape 10/11 — BitLocker + Entra ID")
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # ÉTAPE 10 — BitLocker + sauvegarde de la clé dans Entra ID
-    # ─────────────────────────────────────────────────────────────────────────
-
-    PS_BITLOCKER_ENTRA = r"""
-$OutputEncoding = [System.Text.Encoding]::UTF8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$ErrorActionPreference = 'Stop'
-try {
-    # 1) Vérifier la jonction Entra ID (natif ou hybride)
-    $ds = (dsregcmd /status) | Out-String
-    if ($ds -notmatch 'AzureAdJoined\s*:\s*YES') {
-        Write-Host 'FAIL: Appareil non joint a Entra ID - sauvegarde impossible'
-        exit 1
-    }
-
-    # 2) Vérifier le TPM
-    $tpm = Get-Tpm
-    if (-not $tpm.TpmPresent -or -not $tpm.TpmReady) {
-        Write-Host 'FAIL: TPM absent ou non initialise'
-        exit 1
-    }
-
-    # 3) Activer BitLocker sur C: si nécessaire (TPM, XTS-AES 256, espace utilisé)
-    $vol = Get-BitLockerVolume -MountPoint 'C:'
-    if ($vol.VolumeStatus -eq 'FullyDecrypted') {
-        Enable-BitLocker -MountPoint 'C:' -EncryptionMethod XtsAes256 `
-            -UsedSpaceOnly -TpmProtector -SkipHardwareTest | Out-Null
-        Write-Host 'INFO: BitLocker active (chiffrement en cours en arriere-plan)'
-    } else {
-        Write-Host "INFO: BitLocker deja actif (statut: $($vol.VolumeStatus))"
-    }
-
-    # 4) Garantir un protecteur RecoveryPassword (le TPM seul ne se sauvegarde pas)
-    $vol = Get-BitLockerVolume -MountPoint 'C:'
-    $rp  = $vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
-    if (-not $rp) {
-        Add-BitLockerKeyProtector -MountPoint 'C:' -RecoveryPasswordProtector | Out-Null
-        $rp = (Get-BitLockerVolume -MountPoint 'C:').KeyProtector |
-              Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
-        Write-Host 'INFO: Protecteur de recuperation cree'
-    }
-
-    # 5) Sauvegarder chaque protecteur RecoveryPassword dans Entra ID
-    foreach ($p in $rp) {
-        BackupToAAD-BitLockerKeyProtector -MountPoint 'C:' -KeyProtectorId $p.KeyProtectorId
-        Write-Host "OK: Cle $($p.KeyProtectorId) envoyee vers Entra ID"
-    }
-
-    # 6) Confirmation via le journal d'événements (event 845 = backup réussi)
-    # On attend 10s — sur réseau lent ou Entra ID congestionné, l'event
-    # peut prendre plusieurs secondes à être écrit après la cmdlet.
-    Start-Sleep -Seconds 10
-    $evt = Get-WinEvent -FilterHashtable @{
-        LogName = 'Microsoft-Windows-BitLocker/BitLocker Management'; Id = 845
-    } -MaxEvents 1 -ErrorAction SilentlyContinue
-    if ($evt -and $evt.TimeCreated -gt (Get-Date).AddMinutes(-10)) {
-        Write-Host "DONE: Sauvegarde confirmee dans Entra ID (event 845 a $($evt.TimeCreated.ToString('HH:mm:ss')))"
-        Write-Host "INFO: Pour verifier → Portail Entra ID > Devices > $env:COMPUTERNAME > BitLocker keys"
-    } else {
-        Write-Host 'WARN: Event 845 non trouve - la cle a peut-etre ete envoyee mais non confirmee'
-        Write-Host "INFO: Verifiez dans → Portail Entra ID > Devices > $env:COMPUTERNAME > BitLocker keys"
-    }
-} catch {
-    Write-Host "FAIL: $($_.Exception.Message)"
-    exit 1
-}
-"""
-
-    def step10_bitlocker(self):
-        self.step(10, "active", "BitLocker + Entra ID...")
-        self.log("BITLOCKER — SAUVEGARDE CLÉ ENTRA ID", "SECTION")
-        # NOTE sécurité : le mot de passe de récupération n'est JAMAIS loggé,
-        # seulement le KeyProtectorId (le log atterrit sur le bureau).
-
-        # SEC-3 : RemoteSigned — les cmdlets BitLocker sont signées par Microsoft.
-        code, out = run_cmd([
-            "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
-            "-Command", self.PS_BITLOCKER_ENTRA
-        ])
-
-        had_fail = False
-        had_done = False
-        for line in out.splitlines():
-            line = line.strip()
-            if line.startswith("OK:"):
-                self.log(line[3:].strip(), "OK")
-            elif line.startswith("INFO:"):
-                self.log(line[5:].strip(), "INFO")
-            elif line.startswith("WARN:"):
-                self.log(line[5:].strip(), "WARN")
-            elif line.startswith("DONE:"):
-                self.log(line[5:].strip(), "OK")
-                had_done = True
-            elif line.startswith("FAIL:"):
-                self.log(line[5:].strip(), "FAIL")
-                had_fail = True
-
-        # On se fie au contenu parsé plutôt qu'au code de sortie PS :
-        # le script PS peut retourner 0 même en cas d'erreur partielle.
-        if had_fail or (not had_done and code != 0):
-            self.step(10, "fail", "Échec — voir le log")
-        else:
-            self.step(10, "done", "Clé sauvegardée dans Entra ID")
-        self.progress(11, "✅ Installation terminée !")
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # SAUVEGARDE DU LOG
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # INVENTAIRE MATÉRIEL
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # Script CIM unique : un seul processus PowerShell pour tout collecter.
-    # Chaque valeur est émise sous la forme « INV|clé|valeur » — parsing par
-    # sentinelle, insensible à tout bruit résiduel dans la sortie (leçon tirée
-    # du bug de détection NVIDIA). Chaque bloc a son propre try/catch : une
-    # requête qui échoue n'empêche jamais les autres de remonter.
-    INVENTORY_PS = r"""
-function Emit($k, $v) {
-    if ($null -ne $v -and "$v".Trim() -ne '') {
-        Write-Output ("INV|" + $k + "|" + ("$v" -replace '[\r\n]+', ' ').Trim())
-    }
-}
-
-# Choisit le numéro de série disque le plus exploitable parmi plusieurs sources.
-# Selon le pilote NVMe, Windows expose soit le numéro imprimé sur l'étiquette
-# (ex. 2343X801559), soit l'EUI-64 du contrôleur (ex. 0025_38CC_51B0_1788), qui
-# n'est PAS le numéro de série et ne sert à rien pour l'inventaire ou le SAV.
-# On écarte donc les valeurs de forme EUI et on garde le premier vrai numéro.
-function Get-CleanSerial($candidates) {
-    foreach ($c in $candidates) {
-        if ($null -eq $c) { continue }
-        $s = "$c".Trim().TrimEnd('.')
-        # AdapterSerialNumber arrive rembourré et suffixé : « S7G8NF1X923400      _0001 ».
-        $s = ($s -replace '\s+_\d+$', '') -replace '\s+', ''
-        if ($s -eq '') { continue }
-        # EUI-64 : 4 groupes de 4 chiffres hexa (avec ou sans séparateur)
-        if ($s -match '^[0-9A-Fa-f]{4}([ _-]?[0-9A-Fa-f]{4}){3}$') { continue }
-        return $s
-    }
-    # Aucune source « propre » : renvoyer la première valeur non vide plutôt que rien.
-    foreach ($c in $candidates) {
-        if ($null -ne $c -and "$c".Trim() -ne '') { return "$c".Trim().TrimEnd('.') }
-    }
-    return $null
-}
-
-# ── Identité machine ──────────────────────────────────────────────────────
-try {
-    $cs   = Get-CimInstance Win32_ComputerSystem        -ErrorAction SilentlyContinue
-    $bios = Get-CimInstance Win32_BIOS                  -ErrorAction SilentlyContinue
-    $csp  = Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue
-
-    Emit 'Fabricant' $cs.Manufacturer
-    Emit 'Modele'    $cs.Model
-    # Sur Lenovo, Model contient le code machine (ex. 21F6CTO1WW) et le nom
-    # commercial (ex. ThinkPad P14s Gen 4) est dans ComputerSystemProduct.Version.
-    if ($csp.Version -and $csp.Version -ne $cs.Model -and
-        $csp.Version -notmatch '^(None|System Version|Default string)$') {
-        Emit 'ModeleCommercial' $csp.Version
-    }
-    Emit 'NumeroSerie' $bios.SerialNumber
-    Emit 'BIOS' $bios.SMBIOSBIOSVersion
-    if ($bios.ReleaseDate) { Emit 'BIOSDate' ($bios.ReleaseDate.ToString('yyyy-MM-dd')) }
-} catch {}
-
-# ── Processeur ────────────────────────────────────────────────────────────
-try {
-    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue |
-           Select-Object -First 1
-    Emit 'CPU' $cpu.Name
-    Emit 'CPUCoeurs' ("$($cpu.NumberOfCores) coeurs / $($cpu.NumberOfLogicalProcessors) threads")
-} catch {}
-
-# ── Mémoire ───────────────────────────────────────────────────────────────
-try {
-    $ram = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
-    if ($ram.Count -gt 0) {
-        $totalGB = [math]::Round((($ram | Measure-Object Capacity -Sum).Sum) / 1GB, 0)
-        $slots = (Get-CimInstance Win32_PhysicalMemoryArray -ErrorAction SilentlyContinue |
-                  Select-Object -First 1).MemoryDevices
-        if ($slots) { Emit 'RAMTotal' "$totalGB Go ($($ram.Count) barrette(s) sur $slots emplacement(s))" }
-        else        { Emit 'RAMTotal' "$totalGB Go ($($ram.Count) barrette(s))" }
-        $i = 0
-        foreach ($m in $ram) {
-            $i++
-            $cap = [math]::Round($m.Capacity / 1GB, 0)
-            $spd = if ($m.Speed) { " @ $($m.Speed) MHz" } else { "" }
-            $pn  = if ($m.PartNumber) { " — $($m.PartNumber.Trim())" } else { "" }
-            Emit "RAM$i" ("$cap Go$spd$pn")
-        }
-    }
-} catch {}
-
-# ── Disques ───────────────────────────────────────────────────────────────
-try {
-    $pd = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage `
-                            -ClassName MSFT_PhysicalDisk -ErrorAction SilentlyContinue)
-    # Sources complémentaires pour le numéro de série (cf. Get-CleanSerial) :
-    # Win32_DiskDrive et MSFT_Disk exposent souvent le numéro de l'étiquette
-    # là où MSFT_PhysicalDisk ne renvoie que l'EUI-64 du contrôleur NVMe.
-    $w32  = @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)
-    $mdsk = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage `
-                              -ClassName MSFT_Disk -ErrorAction SilentlyContinue)
-    if ($pd.Count -gt 0) {
-        $i = 0
-        foreach ($d in $pd) {
-            $i++
-            $type = switch ($d.MediaType) { 3 {'HDD'} 4 {'SSD'} 5 {'SCM'} default {''} }
-            $bus  = switch ($d.BusType)   { 17 {'NVMe'} 11 {'SATA'} 7 {'USB'} default {''} }
-            $sz   = [math]::Round($d.Size / 1GB, 0)
-            Emit "Disque$i" (("$($d.FriendlyName) — $sz Go $type $bus") -replace '\s+', ' ')
-            # Corréler les trois classes sur le même disque physique :
-            # MSFT_PhysicalDisk.DeviceId == Win32_DiskDrive.Index == MSFT_Disk.Number
-            $num = $null
-            if ($d.DeviceId -match '^\d+$') { $num = [int]$d.DeviceId }
-            $sw = $null; $sm = $null
-            if ($null -ne $num) {
-                $sw = ($w32  | Where-Object { $_.Index  -eq $num } | Select-Object -First 1).SerialNumber
-                $sm = ($mdsk | Where-Object { $_.Number -eq $num } | Select-Object -First 1).SerialNumber
-            }
-            # FruId et AdapterSerialNumber EN PREMIER : sur NVMe, ce sont les
-            # seules propriétés qui portent le numéro imprimé sur l'étiquette.
-            # SerialNumber / UniqueId des trois classes renvoient tous l'EUI-64
-            # du contrôleur (vérifié : Windows le préfixe lui-même « eui. »).
-            $serial = Get-CleanSerial @($d.FruId, $d.AdapterSerialNumber,
-                                        $sw, $sm, $d.SerialNumber)
-            if ($serial) { Emit "DisqueSerie$i" $serial }
-            if ($d.FirmwareVersion) { Emit "DisqueFirmware$i" ($d.FirmwareVersion.Trim()) }
-        }
-    } else {
-        # Repli si l'espace de noms Storage est indisponible.
-        $i = 0
-        foreach ($d in $w32) {
-            $i++
-            $sz = [math]::Round($d.Size / 1GB, 0)
-            Emit "Disque$i" "$($d.Model) — $sz Go"
-            $serial = Get-CleanSerial @($d.SerialNumber)
-            if ($serial) { Emit "DisqueSerie$i" $serial }
-        }
-    }
-    $c = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
-    if ($c) {
-        Emit 'VolumeC' ("$([math]::Round($c.Size/1GB,0)) Go total / $([math]::Round($c.FreeSpace/1GB,0)) Go libres")
-    }
-} catch {}
-
-# ── Cartes réseau (physiques uniquement) ──────────────────────────────────
-try {
-    # PhysicalAdapter + PNPDeviceID PCI/USB : exclut les adaptateurs virtuels
-    # (VPN, Hyper-V, loopback) qui sont en ROOT\* et pollueraient l'inventaire.
-    $nics = @(Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue |
-              Where-Object {
-                  $_.PhysicalAdapter -eq $true -and $_.MACAddress -and
-                  ($_.PNPDeviceID -like 'PCI\*' -or $_.PNPDeviceID -like 'USB\*')
-              })
-    $i = 0
-    foreach ($n in $nics) {
-        $i++
-        Emit "MAC$i" "$($n.MACAddress) — $($n.Name)"
-    }
-} catch {}
-"""
-
-    # Ordre d'affichage ; les familles dynamiques (RAM/Disque/MAC) sont ajoutées
-    # ensuite par préfixe, triées naturellement.
-    INVENTORY_LABELS = [
-        ("Fabricant",       "Fabricant"),
-        ("ModeleCommercial", "Modèle"),
-        ("Modele",          "Code machine"),
-        ("NumeroSerie",     "N° de série"),
-        ("BIOS",            "BIOS"),
-        ("BIOSDate",        "Date BIOS"),
-        ("CPU",             "Processeur"),
-        ("CPUCoeurs",       "Cœurs"),
-        ("RAMTotal",        "Mémoire"),
-        ("VolumeC",         "Volume C:"),
-    ]
+        self.step(9, "done", "Configuration Windows terminée")
+        self.progress(9, "Étape 9/9 — Terminé")
 
     def collect_inventory(self) -> dict:
         """Collecte l'inventaire matériel via CIM. Retourne un dict clé → valeur.
@@ -97330,8 +96689,6 @@ try {
             (6,    self.step6_software),
             (7,    self.step7_edge_bookmarks),
             (8,    self.step8_windows_config),
-            (9,    self.step9_windows_update),
-            (10,   self.step10_bitlocker),
         ]
         try:
             for idx, fn in etapes:
@@ -97705,13 +97062,15 @@ footer{padding:14px 28px;font-size:11px;color:#8a94a0;background:#fafbfc}
             "Microsoft Office — installation tentée",
             "Logiciels : Firefox, Chrome, Slack, Box for Office, Box Tools, Adobe, Intel DSA",
             "Favoris Microsoft Edge configurés",
-            "Configuration Windows (écran de veille, démarrage rapide, veille)",
-            "Windows Update — recherche et installation",
-            "BitLocker — sauvegarde clé dans Entra ID",
+            "Configuration Windows (écran de veille, régional, démarrage rapide, veille)",
         ]
         for action in actions:
             self.log(f"  • {action}", "INFO")
         self.log("Actions manuelles recommandées :", "INFO")
+        # Windows Update et BitLocker ne sont plus pris en charge par le script :
+        # ils relèvent des stratégies du parc. La vérification finale continue
+        # néanmoins de CONSTATER l'état du chiffrement, en lecture seule.
+        self.log("  • Windows Update — lancer manuellement si nécessaire", "INFO")
         self.log("  • Vérifier le changement de nom d'ordinateur", "INFO")
         self.log("  • Importation des favoris Firefox / Chrome si nécessaire", "INFO")
         self.log("  • Transfert de données si c'est un refresh", "INFO")
@@ -97732,8 +97091,6 @@ footer{padding:14px 28px;font-size:11px;color:#8a94a0;background:#fafbfc}
             reasons.append("changement de nom d'ordinateur")
 
         # 2. Redémarrage déjà signalé en attente durant l'exécution.
-        if getattr(self, "_reboot_pending_seen", False):
-            reasons.append("mises à jour Windows en attente")
 
         # 3. Clés de registre Windows Update / CBS.
         reboot_keys = [
@@ -98222,7 +97579,7 @@ class InstalleXWindow(QMainWindow):
         self.step_panels[0].update_state(
             "done", f"Build {self.win_build} — {self.win_version}"
         )
-        self._on_progress(1, "Étape 1/11 — Création des dossiers")
+        self._on_progress(1, "Étape 1/9 — Création des dossiers")
 
         self.worker.start()
 

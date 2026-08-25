@@ -26,7 +26,7 @@ Outil de provisionnement automatisé des postes de travail pour les déploiement
 
 ## Aperçu
 
-LGS InstalleX automatise la préparation complète d'un poste de travail Windows dans le cadre des déploiements LGS, depuis un poste fraîchement imagé jusqu'à un poste prêt à remettre à l'utilisateur. L'outil regroupe en une seule interface les étapes habituellement manuelles et sujettes à erreur : renommage machine, configuration régionale, jonction Entra ID, installation des applications standard, chiffrement BitLocker avec sauvegarde de la clé, et vérifications post-installation.
+LGS InstalleX automatise la préparation complète d'un poste de travail Windows dans le cadre des déploiements LGS, depuis un poste fraîchement imagé jusqu'à un poste prêt à remettre à l'utilisateur. L'outil regroupe en une seule interface les étapes habituellement manuelles et sujettes à erreur : renommage machine, configuration régionale, jonction Entra ID, installation des applications standard, et vérifications post-installation. Le chiffrement BitLocker et Windows Update relèvent des stratégies du parc et ne sont plus pilotés par l'outil ; la vérification finale se contente d'en **constater** l'état.
 
 Deux implémentations fonctionnellement équivalentes sont maintenues en parallèle :
 
@@ -37,14 +37,13 @@ Deux implémentations fonctionnellement équivalentes sont maintenues en parall�
 
 **Caractéristiques principales**
 
-- Provisionnement en 10 étapes séquentielles (grille de progression sur 11 jalons) avec log temps réel
+- Provisionnement en 8 étapes séquentielles (grille de progression sur 9 jalons) avec log temps réel
 - Élévation UAC automatique et exécution en contexte administrateur
 - Jonction Entra ID couvrant les scénarios Autopilot, PPKG et manuel
-- Chiffrement BitLocker (XTS-AES-256) avec sauvegarde de la clé de récupération vers Entra ID
 - Déploiement applicatif via winget avec repli sur téléchargement direct ; Microsoft 365 Apps installé par winget avec configuration maîtrisée (repli sur l'ODT local) et Lenovo Commercial Vantage via paquet de déploiement compagnon
 - **Vérification de la signature Authenticode des installeurs téléchargés** (`Get-AuthenticodeSignature`) avant toute exécution en administrateur ; un binaire non signé, altéré ou non fiable est rejeté
 - Assets embarqués en Base64 (aucune dépendance réseau vers SharePoint / OneDrive)
-- Détection de langue ; détection matérielle robuste des GPU NVIDIA (par ID fabricant PCI `VEN_10DE`) avec installation du pilote et de NVIDIA App (Entreprise) ; automatisation Windows Update
+- Détection de langue ; détection matérielle robuste des GPU NVIDIA (par ID fabricant PCI `VEN_10DE`) avec installation du pilote et de NVIDIA App (Entreprise)
 - **Inventaire matériel** du poste collecté et journalisé au démarrage (sans effet sur le provisionnement), puis réutilisé dans la fiche de remise
 - **Configuration régionale** fr-CA : date ISO `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time, position géographique Canada
 - **Vérification finale** en 15 points qui remesure le poste réellement livré, et **fiche de remise HTML** déposée sur le bureau (identification, contrôles, inventaire)
@@ -71,8 +70,8 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 
 - **GUI + worker thread** — l'interface (PyQt6 / WinForms) reste réactive pendant les opérations longues grâce à un thread de travail dédié (`QThread` côté Python), la communication vers l'UI se faisant par signaux thread-safe (`pyqtSignal`).
 - **Renommage machine sans `Rename-Computer`** — le renommage évite la cmdlet `Rename-Computer`, qui peut émettre `WM_ENDSESSION` / `InitiateSystemShutdown` et fermer prématurément la GUI. Il est réalisé via PowerShell par écriture registre (`Set-ItemProperty` sur `ComputerName` / `Hostname`) puis `Win32_ComputerSystem.Rename()` (WMI), sans aucun signal de redémarrage — le changement est effectif au prochain démarrage. Le nouveau nom est transmis par variable d'environnement (`$env:INSTALLEX_NEW_NAME`), jamais interpolé dans le corps du script (anti-injection).
-- **Appels système centralisés** — les commandes externes passent par un helper unique `run_cmd` (forçage UTF-8, `CREATE_NO_WINDOW`, timeout paramétrable, injection de variables d'environnement via `env_extra`). Les scripts PowerShell complexes (détection GPU) sont transmis en Base64 UTF-16LE via `-EncodedCommand` (helper `_ps_encoded`) pour éviter toute mauvaise interprétation des `$` et caractères spéciaux. PowerShell reste l'outil retenu là où il est le plus fiable (raccourci COM `WScript.Shell`, renommage, BitLocker, PSWindowsUpdate, signature Authenticode, requêtes CIM/WMI).
-- **Politique d'exécution `RemoteSigned`** — les appels PowerShell utilisent `-ExecutionPolicy RemoteSigned` (au lieu de `Bypass`) : les scripts système sollicités (PSGallery/WUA, cmdlets BitLocker) sont signés par Microsoft et s'exécutent sans abaisser la politique.
+- **Appels système centralisés** — les commandes externes passent par un helper unique `run_cmd` (forçage UTF-8, `CREATE_NO_WINDOW`, timeout paramétrable, injection de variables d'environnement via `env_extra`). Les scripts PowerShell complexes (détection GPU) sont transmis en Base64 UTF-16LE via `-EncodedCommand` (helper `_ps_encoded`) pour éviter toute mauvaise interprétation des `$` et caractères spéciaux. PowerShell reste l'outil retenu là où il est le plus fiable (raccourci COM `WScript.Shell`, renommage, signature Authenticode, requêtes CIM/WMI, lecture de l'état BitLocker).
+- **Politique d'exécution `RemoteSigned`** — les appels PowerShell utilisent `-ExecutionPolicy RemoteSigned` (au lieu de `Bypass`) : les scripts système sollicités sont signés par Microsoft et s'exécutent sans abaisser la politique.
 - **Vérification des binaires avant exécution** — tout installeur téléchargé (repli hors winget : Firefox/Chrome, Adobe, Intel DSA, NVIDIA Driver, NVIDIA App) est contrôlé avant d'être lancé en administrateur : taille minimale et signature Authenticode de l'éditeur via la fonction `verify_authenticode` (`Get-AuthenticodeSignature`). Un fichier non signé, altéré ou non fiable est rejeté (fail-safe).
 - **Encodage UTF-8 forcé** — encodage UTF-8 (avec BOM) de bout en bout, incluant l'injection d'un préfixe console pour les appels PowerShell, afin d'éviter la corruption des accents et caractères spéciaux sur un Windows en français.
 - **Détection et confirmation uniformes** — le helper `_soft_present()` combine chemins de fichiers **et** clés Uninstall du registre (HKLM 64/32 bits + HKCU) pour toutes les applications ; la détection par chemin seule ratait les installations dans un dossier renommé d'une version à l'autre. Le même contrôle est rejoué **après** chaque installation : un `0` retourné par winget ne prouve pas que le logiciel est présent (cas constaté sur Office).
@@ -136,11 +135,6 @@ La conception de LGS InstalleX répond à un besoin opérationnel précis : réd
 > **Slack et la portée d'installation** — en portée machine, winget sert le paquet **MSIX** de Slack, provisionné pour tous les profils : c'est le comportement attendu en provisionnement, et la raison pour laquelle `--scope machine` est conservé. En portée utilisateur, Slack n'atterrirait que dans le profil du technicien. Conséquence importante pour la détection : un Slack installé en MSIX réside dans `C:\Program Files\WindowsApps` et n'expose **aucun** des chemins classiques — d'où la détection par registre et par nom de paquet Appx (`appx_name`).
 7. **Favoris Microsoft Edge** — écriture des favoris dans les profils + activation de la barre des favoris.
 8. **Configuration Windows** — écran de veille (Ribbons.scr, 10 min, verrouillage) écrit dans le profil par défaut et dans chaque ruche utilisateur chargée, **puis appliqué à la session en cours** via `SystemParametersInfoW` ; **configuration régionale** (fr-CA, date `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time, position Canada) ; désactivation du démarrage rapide ; restauration des paramètres de veille sauvegardés.
-9. **Windows Update** — PSWindowsUpdate avec repli sur l'agent COM natif (WUA). Un redémarrage en attente est **signalé mais n'interrompt plus l'étape** (voir ci-dessous). Le **service Microsoft Update** est enregistré pour couvrir les correctifs Office et les pilotes, et jusqu'à **3 passes** s'enchaînent tant que de nouvelles mises à jour apparaissent (arrêt immédiat si un redémarrage devient nécessaire). L'étape dispose d'un **budget de 10 minutes** (`WU_BUDGET_S`) : au-delà, le provisionnement passe à la suite et les mises à jour restantes se posent d'elles-mêmes après la remise du poste. Le budget couvre l'étape entière — le repli WUA n'obtient que le temps restant, de sorte que le total ne dérive pas.
-
-> **Redémarrage en attente : tenter plutôt que renoncer** — l'étape abandonnait Windows Update dès qu'un redémarrage était en attente. En pratique cette condition est **auto-infligée** : l'étape 9 suit l'installation d'Office, des logiciels et des pilotes, qui posent justement ce marqueur — le code accepte d'ailleurs le code de sortie `3010`, qui signifie « succès, redémarrage requis ». Sur un poste provisionné, 3 des 4 indicateurs étaient présents : Windows Update ne tournait donc quasiment jamais. La prémisse était aussi trop stricte, un redémarrage en attente ne bloquant que certaines opérations de servicing — `PendingFileRenameOperations` en particulier est posé par presque tous les installeurs. L'état est désormais journalisé et reporté au bilan final, mais la mise à jour est tentée ; si Windows la refuse réellement, le traitement d'erreur existant l'intercepte et l'étape se termine proprement. Au pire on retrouve le comportement précédent, après un essai.
-10. **BitLocker → Entra ID** (`dsregcmd`, `Get-Tpm`, `Enable-BitLocker` XTS-AES-256, `BackupToAAD-BitLockerKeyProtector`, confirmation via event 845 ; **la clé de récupération n'est jamais journalisée**).
-
 *En clôture* : **vérification finale** (15 points remesurés sur le poste) et génération de la **fiche de remise HTML** sur le bureau — les deux avant le nettoyage, pour que la fiche reflète le poste tel qu'il est livré — puis suppression du dossier de déploiement `C:\LGS_Deploy`, récapitulatif des actions, détection d'un redémarrage requis et sauvegarde du journal sur le bureau.
 
 **Vérification finale — points contrôlés**
@@ -161,7 +155,7 @@ Le résultat est journalisé point par point, puis résumé en trois issues : co
 
 Fichier `Fiche_Remise_<poste>_<horodatage>.html` déposé sur le bureau. Trois sections : identification (poste, date, technicien, durée, version de l'outil), résultats de la vérification avec pastilles de couleur, et inventaire matériel complet. Autonome (CSS embarqué, aucune dépendance réseau) et mis en page pour l'impression.
 
-> La barre de progression de la GUI est graduée sur 11 jalons (les 10 étapes numérotées ci-dessus + l'état « Installation terminée »). L'étape 4b n'occupe pas de rang numéroté distinct.
+> La barre de progression de la GUI est graduée sur 9 jalons (le diagnostic initial, les 8 étapes numérotées ci-dessus, puis l'état « Terminé »). L'étape 4b n'occupe pas de rang numéroté distinct.
 
 **Points techniques notables**
 
@@ -177,8 +171,7 @@ Fichier `Fiche_Remise_<poste>_<horodatage>.html` déposé sur le bureau. Trois s
 - **Journal sur le bureau** — écrit au fil de l'eau sur le bureau sous `LGS_Log_Detaile_<nom>_<horodatage>.txt`, consultable immédiatement sans raccourci ni élévation. La clé de récupération BitLocker n'est jamais journalisée.
 - **Écran de veille — ruches Entra ID incluses** — les valeurs sont écrites dans `Control Panel\Desktop` du profil par défaut **et** de chaque ruche utilisateur chargée. Le filtre accepte les SID en `S-1-5-21-…` (comptes locaux et Active Directory) **et en `S-1-12-1-…` (comptes Entra ID)** : ne retenir que le premier préfixe revenait à ignorer l'utilisateur final sur tout poste joint à Entra ID — c'est-à-dire sur la cible même de cet outil. Les SID de service (`S-1-5-18/19/20`, `S-1-5-80-…`) et `.DEFAULT` restent exclus.
 - **Écran de veille appliqué immédiatement** — l'écriture registre couvre les ouvertures de session futures. Mais Windows garde ces paramètres en cache pour la session déjà ouverte : sans notification, l'écran de veille ne s'armait qu'après un redémarrage. `SystemParametersInfoW` (`SPI_SETSCREENSAVETIMEOUT` + `SPI_SETSCREENSAVEACTIVE`, avec `SPIF_SENDCHANGE`) diffuse le changement à la session courante. À noter : cet appel porte sur la session du compte qui exécute le script — si l'élévation UAC utilise un compte administrateur distinct, l'utilisateur final reçoit le réglage par le registre à sa prochaine ouverture de session.
-- **Windows Update — portée et fiabilité** — le service **Microsoft Update** est enregistré (correctifs Office et pilotes, absents du service Windows Update seul) et le repli WUA ne filtre plus sur `Type='Software'`, qui excluait tous les pilotes. Les CLUF sont acceptés (`AcceptEula`) : sans cela, toute mise à jour en exigeant un échouait silencieusement dans ce chemin. Les codes `OperationResultCode` sont interprétés correctement — `2` réussi, `3` réussi avec erreurs, **`4` échec**, **`5` abandonné** — au lieu de traiter `4` et `5` comme un simple redémarrage requis. Le besoin de redémarrage est lu sur `RebootRequired` et remonté au bilan final. La recherche et l'installation tiennent en une seule commande (`-Install`), là où l'ancien code enchaînait deux balayages complets, et la politique `PSGallery` est restaurée en fin d'étape pour ne rien laisser de modifié sur le poste livré.
-- **Timeouts adaptatifs** par commande (30 min par défaut, 2 h pour Windows Update).
+- **Timeouts adaptatifs** par commande (30 min par défaut).
 - **Protection anti-veille** pendant le provisionnement et **mécanisme de pause** thread-safe.
 - **Assets Base64** — fichiers embarqués (PDF de procédures, DOCX, raccourcis `.url`). Un chantier d'optimisation du bloc d'assets (~66 000 lignes) est en cours : externalisation vers un dossier compagnon ou consolidation en archive unique.
 
@@ -196,9 +189,8 @@ Les tests sont menés de façon itérative, sur postes réels, selon un cycle «
 
 - Exécution sur postes fraîchement imagés, dans les conditions réelles de déploiement.
 - Validation du lancement (double-clic, console admin, association `.py`/`.pyw`) et du comportement d'élévation UAC.
-- Vérification de chaque étape du flux : renommage, jonction Entra ID, installation applicative, BitLocker, etc.
+- Vérification de chaque étape du flux : renommage, jonction Entra ID, installation applicative, etc.
 - Contrôle de l'encodage (accents, émojis) sur Windows en français.
-- Vérification de la sauvegarde de la clé BitLocker dans Entra ID (event 845).
 - Tests de robustesse : coupure réseau, échec d'une étape, chemins avec espaces, session non-admin.
 
 Depuis l'ajout de la **vérification finale**, chaque exécution produit sa propre preuve : la fiche de remise HTML consigne l'état réel du poste en 15 points. Conserver ces fiches constitue le relevé de tests le plus fidèle, poste par poste.
@@ -211,7 +203,6 @@ Depuis l'ajout de la **vérification finale**, chaque exécution produit sa prop
 | Renommage + régional | | | | |
 | Jonction Entra ID | | | | |
 | Installation applicative | | | | |
-| BitLocker + sauvegarde clé | | | | |
 | Vérifications post-install | | | | |
 
 ---
@@ -379,7 +370,9 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 ### LGS InstalleX
 
 - **v1.0** *(2026-08-05)* — première version sous le nom LGS InstalleX. Reprend l'intégralité des fonctionnalités et correctifs de P.R.I.S.M 3.8.1 ; seuls le nom et le versionnage changent. Identifiants internes alignés (`INSTALLEX_VERSION`, `$env:INSTALLEX_NEW_NAME`, `InstalleX_crash.log`).
-- **v1.1 (courant)** *(2026-08-21)* — sept ajouts fonctionnels, sans changement de comportement pour les étapes existantes :
+- **Depuis la v1.1** *(le numéro de version n'a pas encore été incrémenté)* :
+  - **Windows Update et BitLocker retirés du script** — ces deux domaines relèvent des stratégies du parc (Intune, GPO), et le chiffrement était déjà actif avant l'intervention de l'outil sur les postes observés. Le provisionnement passe de **10 à 8 étapes** et la grille de **11 à 9 jalons**. La vérification finale continue de **constater** l'état de BitLocker, en lecture seule : la fiche de remise reste une preuve de conformité, mais l'outil n'agit plus sur le chiffrement. Windows Update figure désormais dans les actions manuelles recommandées.
+- **v1.1** *(2026-08-21)* — sept ajouts fonctionnels, sans changement de comportement pour les étapes existantes :
   - **Configuration régionale** — fr-CA, date ISO `yyyy-MM-dd`, horloge 24 h, fuseau Eastern Standard Time et position Canada, intégrés à l'étape 8 sans nouvelle étape numérotée.
   - **Vérification finale** — 15 points remesurés sur le poste en fin de provisionnement, plutôt que déduits du déroulé du script.
   - **Fiche de remise HTML** — déposée sur le bureau : identification, résultats des contrôles, inventaire matériel. Autonome et mise en page pour l'impression.
