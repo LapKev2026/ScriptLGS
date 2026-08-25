@@ -297,6 +297,12 @@ LGS InstalleX effectue des opérations à privilèges élevés (exécution en ad
 
 | Défaut | Correction | Commit |
 |---|---|---|
+| `Étape 9 — erreur inattendue : object has no attribute WU_BUDGET_S` en mode Personnalisation. Le retrait des étapes Windows Update et BitLocker avait supprimé **trois constantes de classe** et non une seule : `WU_BUDGET_S`, mais aussi `INVENTORY_PS` et `INVENTORY_LABELS` — l'inventaire matériel était donc cassé lui aussi, silencieusement, son `try/except` renvoyant un dictionnaire vide | Les trois constantes sont restaurées depuis la dernière version saine. Vérifié : l'inventaire recollecte 23 entrées, et une sélection limitée à `step9` n'exécute plus que l'étape 9 | `—` |
+| L'étape 4b (nouvelle embauche) s'exécutait même en mode Personnalisation, faute de rang numéroté : ne sélectionner que Firefox aurait quand même ouvert Box IBM | Rattachée à l'étape 4, dont elle est la sous-étape | `—` |
+
+
+| Défaut | Correction | Commit |
+|---|---|---|
 | Edge ne s'ouvrait pas sur `www.lgs.com`. Seuls `HomepageLocation` et `HomepageIsNewTabPage` lui étaient posés — or `HomepageLocation` ne pilote que le **bouton Accueil**, pas la page d'ouverture. Chrome recevait bien les quatre clés nécessaires, Edge seulement deux | Ajout de `RestoreOnStartup` à `4` (« ouvrir des pages précises ») et de `RestoreOnStartupURLs\1` pour Edge, à l'identique de Chrome | `3ae6813` |
 
 ### 2026-08-24

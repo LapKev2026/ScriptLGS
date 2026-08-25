@@ -96730,6 +96730,14 @@ try {
         except Exception:
             return False
 
+    # Budget de temps accordé à Windows Update, en secondes. Passé ce délai on
+    # passe à l'étape suivante : les mises à jour restantes se poseront d'elles-
+    # mêmes après la remise du poste, alors qu'un technicien immobilisé une ou
+    # deux heures devant la barre de progression, non. Le budget couvre l'étape
+    # ENTIÈRE : ce qui reste après PSWindowsUpdate est ce dont dispose le repli
+    # WUA, pour que le total ne dérive pas.
+    WU_BUDGET_S = 600   # 10 minutes
+
     def step9_windows_update(self):
         self.step(10, "active", "Recherche des mises à jour...")
         self.log("WINDOWS UPDATE", "SECTION")
@@ -97156,6 +97164,173 @@ try {
 }
 """
 
+    # Script CIM unique : un seul processus PowerShell pour tout collecter.
+    # Chaque valeur est émise sous la forme « INV|clé|valeur » — parsing par
+    # sentinelle, insensible à tout bruit résiduel dans la sortie (leçon tirée
+    # du bug de détection NVIDIA). Chaque bloc a son propre try/catch : une
+    # requête qui échoue n'empêche jamais les autres de remonter.
+    INVENTORY_PS = r"""
+function Emit($k, $v) {
+    if ($null -ne $v -and "$v".Trim() -ne '') {
+        Write-Output ("INV|" + $k + "|" + ("$v" -replace '[\r\n]+', ' ').Trim())
+    }
+}
+
+# Choisit le numéro de série disque le plus exploitable parmi plusieurs sources.
+# Selon le pilote NVMe, Windows expose soit le numéro imprimé sur l'étiquette
+# (ex. 2343X801559), soit l'EUI-64 du contrôleur (ex. 0025_38CC_51B0_1788), qui
+# n'est PAS le numéro de série et ne sert à rien pour l'inventaire ou le SAV.
+# On écarte donc les valeurs de forme EUI et on garde le premier vrai numéro.
+function Get-CleanSerial($candidates) {
+    foreach ($c in $candidates) {
+        if ($null -eq $c) { continue }
+        $s = "$c".Trim().TrimEnd('.')
+        # AdapterSerialNumber arrive rembourré et suffixé : « S7G8NF1X923400      _0001 ».
+        $s = ($s -replace '\s+_\d+$', '') -replace '\s+', ''
+        if ($s -eq '') { continue }
+        # EUI-64 : 4 groupes de 4 chiffres hexa (avec ou sans séparateur)
+        if ($s -match '^[0-9A-Fa-f]{4}([ _-]?[0-9A-Fa-f]{4}){3}$') { continue }
+        return $s
+    }
+    # Aucune source « propre » : renvoyer la première valeur non vide plutôt que rien.
+    foreach ($c in $candidates) {
+        if ($null -ne $c -and "$c".Trim() -ne '') { return "$c".Trim().TrimEnd('.') }
+    }
+    return $null
+}
+
+# ── Identité machine ──────────────────────────────────────────────────────
+try {
+    $cs   = Get-CimInstance Win32_ComputerSystem        -ErrorAction SilentlyContinue
+    $bios = Get-CimInstance Win32_BIOS                  -ErrorAction SilentlyContinue
+    $csp  = Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue
+
+    Emit 'Fabricant' $cs.Manufacturer
+    Emit 'Modele'    $cs.Model
+    # Sur Lenovo, Model contient le code machine (ex. 21F6CTO1WW) et le nom
+    # commercial (ex. ThinkPad P14s Gen 4) est dans ComputerSystemProduct.Version.
+    if ($csp.Version -and $csp.Version -ne $cs.Model -and
+        $csp.Version -notmatch '^(None|System Version|Default string)$') {
+        Emit 'ModeleCommercial' $csp.Version
+    }
+    Emit 'NumeroSerie' $bios.SerialNumber
+    Emit 'BIOS' $bios.SMBIOSBIOSVersion
+    if ($bios.ReleaseDate) { Emit 'BIOSDate' ($bios.ReleaseDate.ToString('yyyy-MM-dd')) }
+} catch {}
+
+# ── Processeur ────────────────────────────────────────────────────────────
+try {
+    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue |
+           Select-Object -First 1
+    Emit 'CPU' $cpu.Name
+    Emit 'CPUCoeurs' ("$($cpu.NumberOfCores) coeurs / $($cpu.NumberOfLogicalProcessors) threads")
+} catch {}
+
+# ── Mémoire ───────────────────────────────────────────────────────────────
+try {
+    $ram = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+    if ($ram.Count -gt 0) {
+        $totalGB = [math]::Round((($ram | Measure-Object Capacity -Sum).Sum) / 1GB, 0)
+        $slots = (Get-CimInstance Win32_PhysicalMemoryArray -ErrorAction SilentlyContinue |
+                  Select-Object -First 1).MemoryDevices
+        if ($slots) { Emit 'RAMTotal' "$totalGB Go ($($ram.Count) barrette(s) sur $slots emplacement(s))" }
+        else        { Emit 'RAMTotal' "$totalGB Go ($($ram.Count) barrette(s))" }
+        $i = 0
+        foreach ($m in $ram) {
+            $i++
+            $cap = [math]::Round($m.Capacity / 1GB, 0)
+            $spd = if ($m.Speed) { " @ $($m.Speed) MHz" } else { "" }
+            $pn  = if ($m.PartNumber) { " — $($m.PartNumber.Trim())" } else { "" }
+            Emit "RAM$i" ("$cap Go$spd$pn")
+        }
+    }
+} catch {}
+
+# ── Disques ───────────────────────────────────────────────────────────────
+try {
+    $pd = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage `
+                            -ClassName MSFT_PhysicalDisk -ErrorAction SilentlyContinue)
+    # Sources complémentaires pour le numéro de série (cf. Get-CleanSerial) :
+    # Win32_DiskDrive et MSFT_Disk exposent souvent le numéro de l'étiquette
+    # là où MSFT_PhysicalDisk ne renvoie que l'EUI-64 du contrôleur NVMe.
+    $w32  = @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)
+    $mdsk = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage `
+                              -ClassName MSFT_Disk -ErrorAction SilentlyContinue)
+    if ($pd.Count -gt 0) {
+        $i = 0
+        foreach ($d in $pd) {
+            $i++
+            $type = switch ($d.MediaType) { 3 {'HDD'} 4 {'SSD'} 5 {'SCM'} default {''} }
+            $bus  = switch ($d.BusType)   { 17 {'NVMe'} 11 {'SATA'} 7 {'USB'} default {''} }
+            $sz   = [math]::Round($d.Size / 1GB, 0)
+            Emit "Disque$i" (("$($d.FriendlyName) — $sz Go $type $bus") -replace '\s+', ' ')
+            # Corréler les trois classes sur le même disque physique :
+            # MSFT_PhysicalDisk.DeviceId == Win32_DiskDrive.Index == MSFT_Disk.Number
+            $num = $null
+            if ($d.DeviceId -match '^\d+$') { $num = [int]$d.DeviceId }
+            $sw = $null; $sm = $null
+            if ($null -ne $num) {
+                $sw = ($w32  | Where-Object { $_.Index  -eq $num } | Select-Object -First 1).SerialNumber
+                $sm = ($mdsk | Where-Object { $_.Number -eq $num } | Select-Object -First 1).SerialNumber
+            }
+            # FruId et AdapterSerialNumber EN PREMIER : sur NVMe, ce sont les
+            # seules propriétés qui portent le numéro imprimé sur l'étiquette.
+            # SerialNumber / UniqueId des trois classes renvoient tous l'EUI-64
+            # du contrôleur (vérifié : Windows le préfixe lui-même « eui. »).
+            $serial = Get-CleanSerial @($d.FruId, $d.AdapterSerialNumber,
+                                        $sw, $sm, $d.SerialNumber)
+            if ($serial) { Emit "DisqueSerie$i" $serial }
+            if ($d.FirmwareVersion) { Emit "DisqueFirmware$i" ($d.FirmwareVersion.Trim()) }
+        }
+    } else {
+        # Repli si l'espace de noms Storage est indisponible.
+        $i = 0
+        foreach ($d in $w32) {
+            $i++
+            $sz = [math]::Round($d.Size / 1GB, 0)
+            Emit "Disque$i" "$($d.Model) — $sz Go"
+            $serial = Get-CleanSerial @($d.SerialNumber)
+            if ($serial) { Emit "DisqueSerie$i" $serial }
+        }
+    }
+    $c = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
+    if ($c) {
+        Emit 'VolumeC' ("$([math]::Round($c.Size/1GB,0)) Go total / $([math]::Round($c.FreeSpace/1GB,0)) Go libres")
+    }
+} catch {}
+
+# ── Cartes réseau (physiques uniquement) ──────────────────────────────────
+try {
+    # PhysicalAdapter + PNPDeviceID PCI/USB : exclut les adaptateurs virtuels
+    # (VPN, Hyper-V, loopback) qui sont en ROOT\* et pollueraient l'inventaire.
+    $nics = @(Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.PhysicalAdapter -eq $true -and $_.MACAddress -and
+                  ($_.PNPDeviceID -like 'PCI\*' -or $_.PNPDeviceID -like 'USB\*')
+              })
+    $i = 0
+    foreach ($n in $nics) {
+        $i++
+        Emit "MAC$i" "$($n.MACAddress) — $($n.Name)"
+    }
+} catch {}
+"""
+
+    # Ordre d'affichage ; les familles dynamiques (RAM/Disque/MAC) sont ajoutées
+    # ensuite par préfixe, triées naturellement.
+    INVENTORY_LABELS = [
+        ("Fabricant",       "Fabricant"),
+        ("ModeleCommercial", "Modèle"),
+        ("Modele",          "Code machine"),
+        ("NumeroSerie",     "N° de série"),
+        ("BIOS",            "BIOS"),
+        ("BIOSDate",        "Date BIOS"),
+        ("CPU",             "Processeur"),
+        ("CPUCoeurs",       "Cœurs"),
+        ("RAMTotal",        "Mémoire"),
+        ("VolumeC",         "Volume C:"),
+    ]
+
     def collect_inventory(self) -> dict:
         """Collecte l'inventaire matériel via CIM. Retourne un dict clé → valeur.
 
@@ -97313,6 +97488,11 @@ try {
                 # rester indéfiniment en attente.
                 if idx is not None and not self._actif(f"step{idx}"):
                     self.step(idx, "done", "Non sélectionnée")
+                    continue
+                # L'étape 4b (nouvelle embauche) n'a pas de rang propre : elle
+                # suit l'étape 4. Sans ce rattachement, elle s'exécuterait même
+                # en ne sélectionnant qu'un logiciel, et ouvrirait Box IBM.
+                if idx is None and not self._actif("step4"):
                     continue
                 try:
                     fn()
